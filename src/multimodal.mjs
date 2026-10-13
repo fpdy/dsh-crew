@@ -1,13 +1,13 @@
-// Multimodal bridge: gives the (text-only) DeepSeek model eyes and a brush by
-// borrowing the vision / image-generation abilities of locally installed
-// subscription CLIs (claude -p, codex exec, agy).
+// Explicit multimodal tools using native/API vision and locally installed
+// subscription CLIs (claude -p, codex exec, agy). These calls are separate from
+// native DSH model image input; no pasted-image transcription hook is installed.
 //
 // Vision ladder (WPC11): native DeepSeek VL model deepseek-v4-flash-vision-exp
 // (direct API call, key from DEEPSEEK_API_KEY or ~/.config/dsh-crew/.env — the
 // same source the standalone dispatch uses) is preferred whenever a key is
-// available; every failure degrades to the pre-existing CLI provider chain,
-// which is kept byte-for-byte as the fallback. Image generation is untouched:
-// the native model only ever looks at pictures.
+// available; ordinary failures degrade to the pre-existing CLI provider chain.
+// Caller cancellation always rejects, without fallback or cache writes.
+// Image-generation dispatch is unchanged: native only looks at pictures.
 //
 // Tools are plain ToolDefinition-shaped objects (see @deepseek-ai/dsh-tools
 // defineTool output) so the hub keeps its zero-@deepseek-imports realm
@@ -63,22 +63,116 @@ function deepseekBaseUrl() {
   return base || PUBLIC_DEEPSEEK_BASE;
 }
 
-function run(cmd, args, { timeoutMs, cwd } = {}) {
-  // spawn with stdin ignored: several agent CLIs (codex in particular) behave
-  // differently when handed an open interactive stdin pipe.
+function throwIfAborted(signal) {
+  // AbortSignal supplies a default AbortError itself; explicit falsy reasons
+  // (including null) must be preserved rather than converted into success.
+  if (signal?.aborted) throw signal.reason;
+}
+
+function isAbortError(err) { return err?.name === 'AbortError'; }
+
+const CLI_OUTPUT_CAP = 1024 * 1024;
+const CLI_TAIL_CAP = 4096;
+const CLI_DRAIN_MS = 250;
+
+// Each POSIX child owns a new process group, so signalling never targets Crew
+// or its caller. Kill the group even when its leader exited: grandchildren may
+// otherwise retain the output pipes (or continue model work) indefinitely.
+function killProcessTree(child) {
+  if (!Number.isInteger(child.pid) || child.pid <= 0) return;
+  if (process.platform !== 'win32') {
+    try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+  } else {
+    const killer = spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
+    const timer = setTimeout(() => killer.kill(), 1000);
+    timer.unref?.();
+    killer.once('error', () => clearTimeout(timer));
+    killer.once('close', () => clearTimeout(timer));
+    killer.unref();
+  }
+  try { child.kill('SIGKILL'); } catch {}
+}
+
+function run(cmd, args, { timeoutMs = 180_000, cwd, signal, outputMode = 'answer' } = {}) {
+  throwIfAborted(signal);
+  // Textual callers need a complete answer and reject output truncation.
+  // File-result callers only need bounded diagnostic tails; progress volume
+  // must not determine whether their generated file is considered successful.
+  // Ignore stdin; several agent CLIs behave differently with an open pipe.
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let out = '', err = '';
-    const timer = setTimeout(() => { child.kill('SIGKILL'); }, timeoutMs ?? 180_000);
-    child.stdout.on('data', (c) => { out += c; });
-    child.stderr.on('data', (c) => { err += c; });
-    child.on('error', (e) => { clearTimeout(timer); reject(new Error(`${cmd} spawn failed: ${e.message}`)); });
-    child.on('close', (code, signal) => {
-      clearTimeout(timer);
-      if (signal) reject(new Error(`${cmd} killed by ${signal} (timeout ${timeoutMs ?? 180_000}ms)\n${err.slice(-400)}`));
-      else if (code !== 0) reject(new Error(`${cmd} exited ${code}\n${(err || out).slice(-400)}`));
-      else resolve(out + (out === '' ? err : ''));
+    const child = spawn(cmd, args, {
+      cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'],
+      detached: process.platform !== 'win32', windowsHide: true,
     });
+    let out = Buffer.alloc(0), err = Buffer.alloc(0);
+    let settled = false, drainTimer, treeKilled = false, errBytes = 0;
+    const terminate = () => {
+      if (treeKilled) return;
+      treeKilled = true;
+      killProcessTree(child);
+    };
+    const diagnostics = () => (err.length ? err : out).toString('utf8').slice(-400);
+    const finish = (error, failed = true) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(drainTimer);
+      signal?.removeEventListener('abort', onAbort);
+      terminate();
+      child.stdout.removeListener('data', onOut);
+      child.stderr.removeListener('data', onErr);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.removeListener('exit', onExit);
+      child.removeListener('close', onClose);
+      // Keep the one-shot error handler until close in case abort beats a
+      // queued spawn error. It observes settled and cannot reject twice.
+      if (failed) reject(error);
+      else resolve((out.length ? out : err).toString('utf8'));
+    };
+    const onAbort = () => {
+      try { throwIfAborted(signal); } catch (error) { finish(error); }
+    };
+    const onOut = (chunk) => {
+      if (outputMode === 'diagnostic') {
+        out = Buffer.from(Buffer.concat([out, chunk]).subarray(-CLI_TAIL_CAP));
+      } else if (out.length + chunk.length > CLI_OUTPUT_CAP) {
+        finish(new Error(`${cmd} output exceeded ${CLI_OUTPUT_CAP} bytes\n${diagnostics()}`));
+      } else out = Buffer.concat([out, chunk]);
+    };
+    const onErr = (chunk) => {
+      errBytes += chunk.length;
+      err = Buffer.from(Buffer.concat([err, chunk]).subarray(-CLI_TAIL_CAP));
+    };
+    const exitError = (code, killedBy) => {
+      if (killedBy) return new Error(`${cmd} killed by ${killedBy}\n${diagnostics()}`);
+      if (code !== 0) return new Error(`${cmd} exited ${code}\n${diagnostics()}`);
+      if (outputMode === 'answer' && !out.length && errBytes > CLI_TAIL_CAP) {
+        return new Error(`${cmd} stderr-only answer exceeded ${CLI_TAIL_CAP} bytes\n${diagnostics()}`);
+      }
+      return null;
+    };
+    const complete = (code, killedBy) => {
+      const error = exitError(code, killedBy);
+      finish(error, error !== null);
+    };
+    const onExit = (code, killedBy) => {
+      terminate();
+      // Normally close follows immediately. Bound the wait even for escaped
+      // descendants that retained inherited pipes; never await close forever.
+      drainTimer = setTimeout(() => complete(code, killedBy), CLI_DRAIN_MS);
+    };
+    const onClose = (code, killedBy) => complete(code, killedBy);
+    const onError = (error) => finish(new Error(`${cmd} spawn failed: ${error.message}`));
+    const timer = setTimeout(() => finish(new Error(`${cmd} timed out (${timeoutMs}ms)\n${diagnostics()}`)), timeoutMs);
+    child.stdout.on('data', onOut);
+    child.stderr.on('data', onErr);
+    child.once('error', onError);
+    child.once('exit', onExit);
+    child.once('close', onClose);
+    child.once('close', () => child.removeListener('error', onError));
+    signal?.addEventListener('abort', onAbort, { once: true });
+    if (signal?.aborted) onAbort();
   });
 }
 
@@ -107,38 +201,40 @@ const RESULT_SCHEMA = {
   additionalProperties: false,
 };
 
-async function describeViaClaude(model, imagePath, question) {
+async function describeViaClaude(model, imagePath, question, { signal } = {}) {
   const prompt = `Use your Read tool to view the image file at ${imagePath}, then answer concisely: ${question}. Reply with the answer only — no preamble.`;
   const { dirname } = await import('node:path');
   // NOTE: --allowedTools is variadic and would swallow a trailing prompt, so
   // the prompt rides directly on -p.
   return (await run('claude', ['-p', prompt, '--model', model, '--allowedTools', 'Read'], {
-    timeoutMs: 180_000, cwd: dirname(imagePath),
+    timeoutMs: 180_000, cwd: dirname(imagePath), signal,
   })).trim();
 }
 
-async function describeViaCodex(imagePath, question, model) {
+async function describeViaCodex(imagePath, question, model, { signal } = {}) {
   const prompt = `Look at the attached image and answer concisely: ${question}. Reply with the answer only.`;
   const modelArgs = model && model !== 'default' ? ['-c', `model="${model}"`] : [];
-  const out = await run('codex', ['exec', '--skip-git-repo-check', ...modelArgs, '-i', imagePath, prompt], { timeoutMs: 180_000 });
+  const out = await run('codex', ['exec', '--skip-git-repo-check', ...modelArgs, '-i', imagePath, prompt], { timeoutMs: 180_000, signal });
   const lines = out.trim().split('\n').filter((l) => l.trim() !== '' && !l.startsWith('[20') && !/^(tokens used|codex$|user$|mcp:)/.test(l.trim()));
   return lines.slice(-12).join('\n').trim();
 }
 
-async function describeViaGrok(imagePath, question, model) {
+async function describeViaGrok(imagePath, question, model, { signal } = {}) {
   const { dirname, basename } = await import('node:path');
   const prompt = `View the image file at ./${basename(imagePath)} and answer concisely: ${question}. Reply with the answer only — no preamble.`;
   const modelArgs = model && model !== 'default' ? ['-m', model] : [];
-  const out = await run('grok', [...modelArgs, '-p', prompt], { timeoutMs: 240_000, cwd: dirname(imagePath) });
+  const out = await run('grok', [...modelArgs, '-p', prompt], { timeoutMs: 240_000, cwd: dirname(imagePath), signal });
   return out.trim();
 }
 
-async function describeViaAgy(imagePath, question, model) {
+async function describeViaAgy(imagePath, question, model, { signal } = {}) {
   const prompt = `View the image file at ${imagePath} and answer concisely: ${question}. Reply with the answer only — no preamble.`;
   const modelArgs = model && model !== 'default' ? ['--model', model] : [];
   try {
-    return (await run('agy', [...modelArgs, '-p', prompt], { timeoutMs: 240_000 })).trim();
+    return (await run('agy', [...modelArgs, '-p', prompt], { timeoutMs: 240_000, signal })).trim();
   } catch (err) {
+    throwIfAborted(signal);
+    if (isAbortError(err)) throw err;
     const msg = String(err?.message ?? err);
     if (/permission/i.test(msg)) {
       throw new Error(tr(
@@ -172,23 +268,43 @@ function extMime(p) {
   return e === 'jpg' || e === 'jpeg' ? 'image/jpeg' : e === 'webp' ? 'image/webp' : e === 'gif' ? 'image/gif' : 'image/png';
 }
 
-async function fetchJson(url, { apiKey, body, timeoutMs }) {
+async function fetchJson(url, { apiKey, body, timeoutMs, signal }) {
+  throwIfAborted(signal);
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  const onAbort = () => ctl.abort(signal.reason);
+  signal?.addEventListener('abort', onAbort, { once: true });
+  let rejectAbort;
+  const aborted = new Promise((_, reject) => { rejectAbort = reject; });
+  const onInternalAbort = () => rejectAbort(ctl.signal.reason);
+  ctl.signal.addEventListener('abort', onInternalAbort, { once: true });
+  const t = setTimeout(() => ctl.abort(new Error(tr(
+    `${url} 请求超时 (${timeoutMs}ms)`, `${url} timed out (${timeoutMs}ms)`))), timeoutMs);
   try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
-      body: JSON.stringify(body),
-      signal: ctl.signal,
-    });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`${url} → HTTP ${res.status}: ${text.slice(0, 300)}`);
-    return JSON.parse(text);
-  } catch (err) {
-    if (err?.name === 'AbortError') throw new Error(tr(`${url} 请求超时 (${timeoutMs}ms)`, `${url} timed out (${timeoutMs}ms)`));
-    throw err;
-  } finally { clearTimeout(t); }
+    if (signal?.aborted) onAbort();
+    throwIfAborted(signal);
+    // Bound the entire request, including response-body consumption. The race
+    // also settles promptly if a transport does not honour AbortSignal.
+    const operation = (async () => {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}) },
+        body: JSON.stringify(body),
+        signal: ctl.signal,
+      });
+      throwIfAborted(ctl.signal);
+      const text = await res.text();
+      throwIfAborted(ctl.signal);
+      if (!res.ok) throw new Error(`${url} → HTTP ${res.status}: ${text.slice(0, 300)}`);
+      return JSON.parse(text);
+    })();
+    const result = await Promise.race([operation, aborted]);
+    throwIfAborted(signal);
+    return result;
+  } finally {
+    clearTimeout(t);
+    signal?.removeEventListener('abort', onAbort);
+    ctl.signal.removeEventListener('abort', onInternalAbort);
+  }
 }
 
 function apiBase(entry) {
@@ -197,7 +313,8 @@ function apiBase(entry) {
   return base;
 }
 
-async function describeViaApi(entry, imagePath, question, model) {
+async function describeViaApi(entry, imagePath, question, model, { signal } = {}) {
+  throwIfAborted(signal);
   const base = apiBase(entry);
   const m = model && model !== 'default' ? model : entry.models?.[0];
   if (!m) throw new Error(tr(`自定义 provider "${entry.name ?? entry.id}" 未配置模型列表，无法确定视觉模型`, `Custom provider "${entry.name ?? entry.id}" has no models configured`));
@@ -205,6 +322,7 @@ async function describeViaApi(entry, imagePath, question, model) {
   const data = await fetchJson(`${base}/chat/completions`, {
     apiKey: entry.api_key,
     timeoutMs: 240_000,
+    signal,
     body: {
       model: m,
       messages: [{
@@ -221,11 +339,13 @@ async function describeViaApi(entry, imagePath, question, model) {
   return text.trim();
 }
 
-async function describeViaNative(imagePath, question) {
+async function describeViaNative(imagePath, question, { signal } = {}) {
+  throwIfAborted(signal);
   const b64 = readFileSync(imagePath).toString('base64');
   const data = await fetchJson(`${deepseekBaseUrl()}/chat/completions`, {
     apiKey: deepseekApiKey(),
     timeoutMs: NATIVE_TIMEOUT_MS,
+    signal,
     body: {
       model: NATIVE_VISION_MODEL,
       messages: [{
@@ -271,7 +391,7 @@ async function generateViaApi(entry, prompt, outputPath, size) {
   return outputPath;
 }
 
-async function describeViaCustom(entry, imagePath, question, model) {
+async function describeViaCustom(entry, imagePath, question, model, { signal } = {}) {
   const template = entry.vision_command;
   if (!template || !template.includes('{image}')) {
     throw new Error(tr(
@@ -282,7 +402,7 @@ async function describeViaCustom(entry, imagePath, question, model) {
     .replaceAll('{image}', shq(imagePath))
     .replaceAll('{question}', shq(question))
     .replaceAll('{model}', shq(model ?? 'default'));
-  return (await run('/bin/bash', ['-lc', cmd], { timeoutMs: 240_000, cwd: dirname(imagePath) })).trim();
+  return (await run('/bin/bash', ['-lc', cmd], { timeoutMs: 240_000, cwd: dirname(imagePath), signal })).trim();
 }
 
 async function generateViaCustom(entry, prompt, outputPath, size) {
@@ -296,7 +416,7 @@ async function generateViaCustom(entry, prompt, outputPath, size) {
     .replaceAll('{prompt}', shq(prompt))
     .replaceAll('{output}', shq(outputPath))
     .replaceAll('{size}', shq(size ?? ''));
-  const out = await run('/bin/bash', ['-lc', cmd], { timeoutMs: 480_000, cwd: dirname(outputPath) });
+  const out = await run('/bin/bash', ['-lc', cmd], { timeoutMs: 480_000, cwd: dirname(outputPath), outputMode: 'diagnostic' });
   if (!existsSync(outputPath)) {
     throw new Error(`custom command finished but ${outputPath} was not created. Tail:\n${out.trim().slice(-300)}`);
   }
@@ -308,7 +428,7 @@ async function generateViaCodex(prompt, outputPath, size) {
   // write lands inside its sandbox's writable root regardless of policy.
   const { dirname, basename } = await import('node:path');
   const task = `$imagegen ${prompt}. Save exactly one image to ./${basename(outputPath)} in the current directory.${size ? ` Target size ${size}.` : ''}`;
-  const out = await run('codex', ['exec', '--skip-git-repo-check', task], { timeoutMs: 480_000, cwd: dirname(outputPath) });
+  const out = await run('codex', ['exec', '--skip-git-repo-check', task], { timeoutMs: 480_000, cwd: dirname(outputPath), outputMode: 'diagnostic' });
   if (!existsSync(outputPath)) {
     throw new Error(`codex finished but ${outputPath} was not created. Tail of output:\n${out.trim().slice(-400)}`);
   }
@@ -319,7 +439,7 @@ async function generateViaGrok(prompt, outputPath) {
   // Grok Build CLI: native generate_image tool, saves straight into cwd.
   const { dirname, basename } = await import('node:path');
   const p = `Use your generate_image tool to create: ${prompt}. Save it to ./${basename(outputPath)} in the current directory (convert to the requested format if needed). Reply with the saved path.`;
-  const out = await run('grok', ['-p', p], { timeoutMs: 480_000, cwd: dirname(outputPath) });
+  const out = await run('grok', ['-p', p], { timeoutMs: 480_000, cwd: dirname(outputPath), outputMode: 'diagnostic' });
   if (!existsSync(outputPath)) {
     throw new Error(`grok finished but ${outputPath} was not created. Tail:\n${out.trim().slice(-300)}`);
   }
@@ -334,7 +454,7 @@ async function generateViaAgy(prompt, outputPath) {
   const { readdirSync, copyFileSync } = await import('node:fs');
   const nonce = randomBytes(4).toString('hex');
   const p = `Use ONLY your native generate_image tool — do not run shell commands or any other tools. Generate: ${prompt}. Save the file with a name containing ${nonce}. Reply with the saved path.`;
-  await run('agy', ['-p', p], { timeoutMs: 480_000 });
+  await run('agy', ['-p', p], { timeoutMs: 480_000, outputMode: 'diagnostic' });
   const root = join(homedir(), '.gemini', 'antigravity-cli');
   let fresh = 0;
   let found;
@@ -563,35 +683,40 @@ function visionCacheKey({ backend, provider, model, imagePath, stat, question, c
   return cacheKey(parts);
 }
 
-/** Pre-existing CLI dispatch, byte-for-byte the old selection ladder. */
-async function describeViaCli(provider, model, custom, imagePath, question) {
+/** Existing provider selection ladder, with caller cancellation forwarded. */
+async function describeViaCli(provider, model, custom, imagePath, question, options) {
+  throwIfAborted(options?.signal);
   if (custom) {
     return entryType(custom) === 'cli'
-      ? describeViaCustom(custom, imagePath, question, model)
-      : describeViaApi(custom, imagePath, question, model);
+      ? describeViaCustom(custom, imagePath, question, model, options)
+      : describeViaApi(custom, imagePath, question, model, options);
   }
   switch (provider) {
-    case 'codex': return describeViaCodex(imagePath, question, model);
-    case 'grok': return describeViaGrok(imagePath, question, model);
-    case 'agy': return describeViaAgy(imagePath, question, model);
-    default: return describeViaClaude(model, imagePath, question);
+    case 'codex': return describeViaCodex(imagePath, question, model, options);
+    case 'grok': return describeViaGrok(imagePath, question, model, options);
+    case 'agy': return describeViaAgy(imagePath, question, model, options);
+    default: return describeViaClaude(model, imagePath, question, options);
   }
 }
 
 /**
- * Core vision call with provenance, shared by the describe_image tool and the
- * pre-step transcriber.
+ * Core vision call with provenance, shared by the describe_image tool and
+ * external bridge callers.
  *
  * Ladder: native DeepSeek VL model (when DEEPSEEK_API_KEY is available) → the
  * existing CLI chain. The ladder covers the built-in CLI providers; explicit
  * custom providers keep their own configured path untouched. Every degradation
  * (no key, HTTP error, timeout, empty answer) is surfaced in the returned
- * `provider` string and on the console.
+ * `provider` string and on the console. Caller cancellation is not degradation:
+ * the optional fourth { signal } rejects with its reason and skips fallback/cache.
  *
  * @returns {Promise<{text: string, provider: string, model: string, cached: boolean}>}
  */
-export async function describeFileWithProvenance(getConfig, imagePath, question) {
+export async function describeFileWithProvenance(getConfig, imagePath, question, { signal } = {}) {
+  // Pre-abort must not inspect config, stat/read the image, or touch the cache.
+  throwIfAborted(signal);
   const config = getConfig();
+  throwIfAborted(signal);
   const configured = config.vision_provider ?? 'claude-code';
   if (configured === 'off') throw new Error('vision bridge is disabled');
   const model = config.vision_model ?? 'haiku';
@@ -618,29 +743,35 @@ export async function describeFileWithProvenance(getConfig, imagePath, question)
     } else {
       const key = visionCacheKey({ backend: 'native', provider: 'deepseek', model: NATIVE_VISION_MODEL, imagePath, stat, question, baseUrl: deepseekBaseUrl() });
       if (cache[key]) {
+        throwIfAborted(signal);
         return { text: cache[key], provider: `native · ${NATIVE_VISION_MODEL} (cached)`, model: NATIVE_VISION_MODEL, cached: true };
       }
       try {
         const started = Date.now();
-        const text = await describeViaNative(imagePath, question);
+        const text = await describeViaNative(imagePath, question, { signal });
+        throwIfAborted(signal);
         if (text === '') throw new Error('native returned an empty answer');
         cache[key] = text;
         writeCache(cache);
         console.warn(`dsh-crew: vision answered by native ${NATIVE_VISION_MODEL} in ${Date.now() - started}ms`);
         return { text, provider: `native · ${NATIVE_VISION_MODEL}`, model: NATIVE_VISION_MODEL, cached: false };
       } catch (err) {
-        nativeIssue = { skipped: false, reason: String(err?.message ?? err) };
+        throwIfAborted(signal);
+        if (isAbortError(err)) throw err;
+        nativeIssue = { skipped: false, reason: String(err?.message ?? err).slice(0, 400) };
         console.warn(`dsh-crew: native vision failed, falling back to "${cliProvider}": ${nativeIssue.reason}`);
       }
     }
   }
 
-  // Degradation target: the pre-existing CLI chain, exactly as before.
+  // Degradation target: the pre-existing provider chain, unless cancelled.
+  throwIfAborted(signal);
   const key = visionCacheKey({ backend: 'cli', provider: cliProvider, model, imagePath, stat, question, custom });
   let text = cache[key];
   const cached = Boolean(text);
   if (!text) {
-    text = await describeViaCli(cliProvider, model, custom, imagePath, question);
+    text = await describeViaCli(cliProvider, model, custom, imagePath, question, { signal });
+    throwIfAborted(signal);
     if (text === '') throw new Error(`${cliProvider} returned an empty answer`);
     cache[key] = text;
     writeCache(cache);
@@ -648,12 +779,14 @@ export async function describeFileWithProvenance(getConfig, imagePath, question)
   const provider = nativeIssue
     ? `${cliProvider} (native ${nativeIssue.skipped ? 'skipped' : 'failed'}: ${nativeIssue.reason.slice(0, 200)})`
     : cliProvider;
+  throwIfAborted(signal);
   return { text, provider, model, cached };
 }
 
 /** String-only view of the core call (kept for external callers). */
-export async function describeFile(getConfig, imagePath, question) {
-  const { text } = await describeFileWithProvenance(getConfig, imagePath, question);
+export async function describeFile(getConfig, imagePath, question, options) {
+  const { text } = await describeFileWithProvenance(getConfig, imagePath, question, options);
+  throwIfAborted(options?.signal);
   return text;
 }
 
@@ -677,8 +810,10 @@ export function createMultimodalTools(getConfig) {
       schema: RESULT_SCHEMA,
       render: (_args, value) => [{ type: 'text', text: value.text }],
     },
-    async execute(args) {
+    async execute(args, { signal } = {}) {
+      throwIfAborted(signal);
       const config = getConfig();
+      throwIfAborted(signal);
       const provider = config.vision_provider ?? 'claude-code';
       if (provider === 'off') throw new Error(tr('视觉桥已关闭（设置 → DSH Crew → 视觉 provider）', 'the vision bridge is disabled (Settings → DSH Crew → Vision provider)'));
       const imagePath = String(args.image_path ?? '');
@@ -686,7 +821,8 @@ export function createMultimodalTools(getConfig) {
       const question = typeof args.question === 'string' && args.question !== ''
         ? args.question
         : 'Describe this image in detail: layout, text content, notable elements.';
-      const answer = await describeFileWithProvenance(getConfig, imagePath, question);
+      const answer = await describeFileWithProvenance(getConfig, imagePath, question, { signal });
+      throwIfAborted(signal);
       // Same convention as generate_image: the provider (and any native→CLI
       // degradation reason) rides the text, plus a dedicated provider field.
       const text = answer.provider ? `${answer.text}\n(provider: ${answer.provider})` : answer.text;

@@ -4,13 +4,17 @@
 
 <h1 align="center">DSH Crew</h1>
 
+> **分支相容性告知（以下上游說明若有衝突，以此為準）：** 此分支在所有宿主上停用 `deepseek-vision` 與貼上圖片的自動轉錄，保留宿主原生圖片模型及明確呼叫的 `describe_image` 工具。
+> 更新原始碼後請重新啟動 DSH。
+> 針對 DSH `0.2.1-alpha.2` 的離線、僅限宿主的安全契約測試不代表實際 worker 或視覺 API 相容性已獲驗證；請參閱[視覺安全說明](./docs/vision-safety.md)與[正式 README](./README.md)，本翻譯其餘內容若有不一致，應視為歷史上游文件。
+
 <p align="center">
   <strong>一個 <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> 外掛程式：從 Claude Code / Codex / Antigravity / Grok 分派工作給 DSH 代理，而不放棄主機的原生 subagent UI。</strong><br />
   <sub>原生進度 UI • Tier 策略與升級 • 分派護欄 • 任務看板 • 主機內 DSH 工作階段 • 視覺與圖片生成（原生優先） • 單鍵安裝</sub>
 </p>
 
 <p align="center">
-  <sub>npm: <code>@zseven-w/dsh-crew</code> • 目前外掛程式版本: <code>0.1.0-rc.11</code> • 測試版本 DSH <code>0.1.1-rc.1</code></sub>
+  <sub>npm（上游）: <code>@zseven-w/dsh-crew</code> • 分支基底: <code>0.1.0-rc.14</code> • 分支離線宿主安全契約測試: DSH <code>0.2.1-alpha.2</code>（不代表實際 worker／視覺 API 相容性）</sub>
 </p>
 
 <p align="center">

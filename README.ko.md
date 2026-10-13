@@ -4,13 +4,17 @@
 
 <h1 align="center">DSH Crew</h1>
 
+> **Fork compatibility notice (overrides upstream claims below):** This fork disables `deepseek-vision` and automatic pasted-image transcription on every host; native host image models and explicit `describe_image` remain available.
+> Restart DSH after updating the source.
+> Offline host-only safety contract tests against DSH `0.2.1-alpha.2` do not establish real worker or vision API compatibility; see [vision safety](./docs/vision-safety.md) and the [canonical README](./README.md), and treat the rest of this translation as historical upstream documentation wherever inconsistent.
+
 <p align="center">
   <strong><a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> plugin: Claude Code / Codex / Antigravity / Grok에서 DSH agent로 작업을 dispatch하며, 호스트의 native subagent UI는 그대로 유지합니다.</strong><br />
   <sub>네이티브 진행 UI &bull; Tier 정책 &amp; 에스컬레이션 &bull; 디스패치 가드레일 &bull; 작업 보드 &bull; 호스트 내 DSH 세션 &bull; 비전 &amp; 이미지 생성(네이티브 우선) &bull; 원클릭 설치</sub>
 </p>
 
 <p align="center">
-  <sub>npm: <code>@zseven-w/dsh-crew</code> &middot; 현재 plugin 릴리스: <code>0.1.0-rc.11</code> &middot; DSH <code>0.1.1-rc.1</code>에서 테스트됨</sub>
+  <sub>npm (upstream): <code>@zseven-w/dsh-crew</code> &middot; Fork base: <code>0.1.0-rc.14</code> &middot; Fork offline host-only safety contracts: DSH <code>0.2.1-alpha.2</code> (not real worker/vision API compatibility)</sub>
 </p>
 
 <p align="center">

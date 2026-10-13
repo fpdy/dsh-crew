@@ -305,8 +305,8 @@ function sendJson(res, status, value, headers = {}) {
 /**
  * The panel is the authority on the active locale (DSH's setting may be unset,
  * leaving it to the browser), so it tags requests with ?lang= / body.lang and
- * the hub adopts it. Conversation-side paths with no request behind them —
- * pasted-image transcription — then follow the same language.
+ * the hub adopts it. Explicit multimodal tools also use this locale; there is
+ * no conversation-wide pasted-image transcription hook.
  */
 function adoptLang(value) {
   if (value === 'zh' || value === 'en') setLang(value);
@@ -347,8 +347,8 @@ export async function apply(ctx) {
   } catch {}
   const disposers = [];
 
-  // Multimodal bridge: register describe_image / generate_image for the DS
-  // model. Config is read per call so settings-page edits apply live.
+  // Explicit multimodal tools are independent of native model image input.
+  // Config is read per call so settings-page edits apply live.
   try {
     const { createMultimodalTools } = await import('../multimodal.mjs');
     const { readGlobalConfig } = await import('../install/install.mjs');
@@ -359,15 +359,10 @@ export async function apply(ctx) {
     ctx.logger?.warn?.(`dsh-crew: multimodal tools unavailable: ${err?.message ?? err}`);
   }
 
-  // Vision route: image paste on the text-only DS models (admission adapter +
-  // pre-step transcription).
-  try {
-    const { installVisionRoute } = await import('../vision-route.mjs');
-    const { readGlobalConfig } = await import('../install/install.mjs');
-    disposers.push(installVisionRoute(ctx, () => readGlobalConfig()));
-  } catch (err) {
-    ctx.logger?.warn?.(`dsh-crew: vision route unavailable: ${err?.message ?? err}`);
-  }
+  // Fail closed for the former image-admission alias. Native image routes and
+  // explicit multimodal tools do not need this alias or a global pre-step hook.
+  const { installVisionRoute, visionRouteStatus } = await import('../vision-route.mjs');
+  disposers.push(installVisionRoute(ctx));
 
   ctx.inject(['webServer'], (webCtx) => {
     const webServer = webCtx.webServer;
@@ -391,6 +386,16 @@ export async function apply(ctx) {
     disposers.push(webServer.register({
       kind: 'exact', path: `${ROUTE_BASE}/ping`,
       handler: (req, res) => sendJson(res, 200, { ok: true, service: 'dsh-crew-hub' }),
+    }));
+
+    disposers.push(webServer.register({
+      kind: 'exact', path: `${ROUTE_BASE}/vision-route/status`,
+      handler: (req, res) => {
+        if (req.method !== 'GET' && req.method !== 'HEAD') {
+          return sendJson(res, 405, { ok: false, error: 'GET or HEAD only' }, { allow: 'GET, HEAD' });
+        }
+        return sendJson(res, 200, { ok: true, ...visionRouteStatus() });
+      },
     }));
 
     // WPC14: liveness probe for a ghost job's recorded pid. The panel probes

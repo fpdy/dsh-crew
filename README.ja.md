@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <sub>npm: <code>@zseven-w/dsh-crew</code> &middot; 現行プラグインリリース: <code>0.1.0-rc.11</code> &middot; 動作確認済み DSH <code>0.1.1-rc.1</code></sub>
+  <sub>fork のベース: <code>@zseven-w/dsh-crew@0.1.0-rc.14</code> &middot; ホスト契約のオフライン検証: DSH <code>0.2.1-alpha.2</code>（実モデルの動作確認とは別）</sub>
 </p>
 
 <p align="center">
@@ -27,6 +27,10 @@
   <img src="./docs/images/dsh-crew-overview.png" alt="DSH Crew 設定ページ" width="100%" />
 </p>
 <p align="center"><sub>DSH Crew 設定ページ — ホスト連携、ディスパッチポリシー、実行、マルチモーダルブリッジ</sub></p>
+
+## この fork の互換性方針
+
+この fork は、すべてのホストで `deepseek-vision` と貼り付け画像の自動転写を無効にします。DSH のネイティブ画像対応モデルと、明示的な `describe_image` / `generate_image` 呼び出しは引き続き利用できます。起動済みの Crew を更新した場合は DSH を再起動してください。パネルの再ビルドや画面の再読み込みだけでは、ホスト側のコードは置き換わりません。検証範囲と実行手順は [Vision 安全化の説明](<docs/vision-safety.md>)を参照してください。
 
 ## DSH Crew を使う理由
 
@@ -63,7 +67,7 @@ bundle を DSH プロファイルにインストールすると、各 worker は
 
 ### 👁️ ビジョンと画像生成
 
-DSH のモデルはテキストのみです。`describe_image` は、キーが利用可能なときは DeepSeek 独自の VL モデル (`deepseek-v4-flash-vision-exp`) を優先し、なければすでにお持ちの CLI — Claude、Codex、Grok、Antigravity — または設定した任意の OpenAI 互換 API にフォールバックします。`generate_image` は同じ CLI の筆を借ります。貼り付けた画像は会話内で表示されたまま、テキストとしてモデルに渡されます。
+DSH は、画像入力に対応する設定済みモデルで画像の貼り付けを扱います。この fork は、そのリクエストを変更せず、画像を別のプロバイダーへ自動転写させません。明示的な `describe_image` 呼び出しは設定済みのネイティブ API・カスタム API・CLI を使用し、`generate_image` は設定済みの画像生成プロバイダーを使用します。
 
 </td>
 </tr>
@@ -346,16 +350,16 @@ node src/install/cli.mjs grok
 
 ## マルチモーダル: ビジョンと画像生成
 
-**DeepSeek はテキストのみのモデルであり**、画像入力や生成には対応していません。このプラグインはこれらの能力を MCP ツール経由で外部から調達します:
+**画像入力の可否は、DSH で選択したモデルが宣言する能力によって決まります。** プロバイダー名だけでは決まりません。Crew の明示的なマルチモーダルツールは、DSH のネイティブ画像入力とは別の機能です。
 
-**ネイティブビジョン優先**: ビジョンプロバイダーがビルトイン CLI (または明示的に `native`) の場合、`describe_image` はまず DeepSeek 独自の VL モデル `deepseek-v4-flash-vision-exp` を試します (直接 API 呼び出し。キーは `DEEPSEEK_API_KEY` または `~/.config/dsh-crew/.env` から取得)。失敗した場合はグレースフルに下記の CLI プロバイダーチェーンへフォールバックします (フォールバックとして維持されます)。画像生成には影響しません — ネイティブモデルは画像を見るだけです。
+**ネイティブビジョン優先**: ビジョンプロバイダーがビルトイン CLI (または明示的に `native`) の場合、`describe_image` はまず DeepSeek 独自の VL モデル `deepseek-v4-flash-vision-exp` を試します (直接 API 呼び出し。キーは `DEEPSEEK_API_KEY` または `~/.config/dsh-crew/.env` から取得)。通常のプロバイダーエラーでは、設定済みの CLI へフォールバックできます。呼び出し元が中断した場合は処理を停止し、別のプロバイダーを起動せず、中断した結果をキャッシュしません。画像生成には影響しません — ネイティブモデルは画像を見るだけです。
 
 | ツール | 説明 |
 |---|---|
 | `describe_image` | 画像 (スクリーンショット、デザイン、図表など) を見て質問に回答します。結果はプロバイダー + モデル + 画像 + 質問の組み合わせでキャッシュされます |
 | `generate_image` | テキスト説明から画像を生成し、指定した絶対パスに保存します。出力はフラットなビットマップです (レイヤー編集には OpenPencil が必要) |
 
-**セッションへの画像貼り付け**: DSH でモデルを `DeepSeek (vision) ◉` に切り替えると、画像を直接貼り付けられます。画像はセッション内に残り、通常どおり表示されます。プラグインは画像の後に書き起こしテキストを追記し、送信前に画像を除去します — あなたには画像が見え、モデルにはテキストが読まれます。書き起こしは同じネイティブファーストのはしごをたどります: キーが利用可能なら DeepSeek の VL モデル、なければ設定済みの CLI プロバイダーです。
+**セッションへの画像貼り付け**: DSH に設定済みのネイティブ画像対応モデルを選択してください。Crew は `DeepSeek (vision) ◉` を登録せず、履歴への転写文追加、画像の除去、プロバイダーの切り替えを行いません。保存済みの `deepseek-vision` 選択は、対処方法を含む `UNSUPPORTED_VISION_ROUTE` エラーで拒否します。`vision_provider` は明示的なツール呼び出しの設定であり、自動転写を有効にする設定ではありません。パネルは `GET /_dsh/dsh-crew/vision-route/status` で安全化コードの稼働を確認します。応答がない場合や形式が異なる場合は、新しいホストコードを確認できていないため DSH を再起動してください。
 
 ### 設定
 

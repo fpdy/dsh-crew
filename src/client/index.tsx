@@ -129,7 +129,9 @@ const COPY = {
     groupDispatch: '派发', groupRuntime: '运行', groupMultimodal: '多模态',
     cardDispatch: { t: '派发策略', d: 'orchestrator 未指定时的档位与推理强度，以及档位约束、失败升档与两档各自挂载的 Agent 预设。' },
     cardRuntime: { t: '执行与连接', d: 'worker 会话跑在本实例内还是独立进程，单个任务的超时上限，以及 CC / Codex 探测本实例的地址。' },
-    cardMM: { t: '视觉与生图', d: '给纯文本的 DSH 模型借来眼睛和画笔：describe_image、会话贴图转写与 generate_image 都用这里的设置。' },
+    cardMM: { t: '视觉与生图', d: '这里的设置用于显式调用 describe_image 和 generate_image，不启用会话贴图自动转写。原生图片输入由 DSH 所选模型处理。' },
+    visionRouteDisabled: 'deepseek-vision 兼容路由已禁用：不会自动转写粘贴的图片。请选择 DSH 中支持图片的原生模型，或显式使用 describe_image。',
+    visionRouteUnverified: '尚未确认安全化版本已在 Host 生效。更新 Crew 后请重启 DSH；在确认前不要使用 deepseek-vision。',
     cardCustomProv: { t: '自定义 Provider', d: '接入自己的 API 或本地命令；保存后会出现在上面的视觉 / 生图 provider 选择里。' },
     modeDesc: { auto: 'auto · 优先 hub', hub: 'hub · 必须 hub', standalone: 'standalone · 独立进程' },
     save: '保存', saved: '已保存', jobs: 'Worker 任务', empty: '当前没有 worker 任务。',
@@ -221,7 +223,9 @@ const COPY = {
     groupDispatch: 'Dispatch', groupRuntime: 'Runtime', groupMultimodal: 'Multimodal',
     cardDispatch: { t: 'Dispatch policy', d: 'Tier and effort used when the orchestrator names none, plus tier clamping, failure escalation and the Agent preset mounted per tier.' },
     cardRuntime: { t: 'Execution & connection', d: 'Whether worker sessions run inside this instance or a separate process, the per-job timeout, and the address CC / Codex probes.' },
-    cardMM: { t: 'Vision & image generation', d: "Lends the harness's text-only models eyes and a brush: describe_image, pasted-image transcription and generate_image all use these settings." },
+    cardMM: { t: 'Vision & image generation', d: 'These settings configure explicit describe_image and generate_image calls, not automatic pasted-image transcription. Native image input is handled by the selected DSH model.' },
+    visionRouteDisabled: 'The deepseek-vision compatibility route is disabled: pasted images are not automatically transcribed. Select a native image-capable model in DSH, or use describe_image explicitly.',
+    visionRouteUnverified: 'The safety guard has not been confirmed in the running Host. Restart DSH after updating Crew; do not use deepseek-vision until the updated Host is confirmed.',
     cardCustomProv: { t: 'Custom providers', d: 'Bring your own API or local command; saved providers appear in the vision / image-gen selects above.' },
     modeDesc: { auto: 'auto · prefer hub', hub: 'hub · require hub', standalone: 'standalone' },
     save: 'Save', saved: 'Saved', jobs: 'Worker jobs', empty: 'No worker jobs yet.',
@@ -390,6 +394,7 @@ function WorkersPanel({ ctx }: { ctx: any }) {
   const [jobsLoaded, setJobsLoaded] = useState(false); // first OK snapshot arrived
   const [hoverTask, setHoverTask] = useState<{ id: string; text: string; right: number; top: number; bottom: number; flip: boolean } | null>(null);
   const [status, setStatus] = useState<any>(null);
+  const [visionGuardActive, setVisionGuardActive] = useState(false);
   const [config, setConfig] = useState<any>(null);
   const [dynModels, setDynModels] = useState<Record<string, Array<{ value: string; label?: string }>>>({});
   const [presetRoster, setPresetRoster] = useState<{ defaultId?: string; presets: Array<{ id: string; name?: string; trust?: string }> }>({ presets: [] });
@@ -509,7 +514,22 @@ function WorkersPanel({ ctx }: { ctx: any }) {
   }, [ghosts, withLang, probeOne, copy, locale]);
 
 
+  // A newly rebuilt panel may still be talking to a pre-update Host. Recheck
+  // alongside job polling so a restart/downgrade cannot leave a stale safe badge.
+  // Bound this optional request and keep failures independent of the jobs board.
+  const refreshVisionGuard = useCallback(async () => {
+    try {
+      const path = '/vision-route/status';
+      const r = await readJson(await fetch(withLang(path), {
+        cache: 'no-store', signal: AbortSignal.timeout(3000),
+      }), path);
+      setVisionGuardActive(r.ok === true && r.provider === 'deepseek-vision'
+        && r.supported === false && r.registered === false && r.code === 'UNSUPPORTED_VISION_ROUTE');
+    } catch { setVisionGuardActive(false); }
+  }, [readJson, withLang]);
+
   const refreshAll = useCallback(async () => {
+    void refreshVisionGuard();
     try {
       const [j, s, c, pr] = await Promise.all([get('/jobs'), get('/install/status'), get('/config'), get('/presets')]);
       if (j.ok) mergeJobs(j.jobs ?? []);
@@ -517,13 +537,16 @@ function WorkersPanel({ ctx }: { ctx: any }) {
       if (c.ok) setConfig((prev: any) => prev ?? c.config);
       if (pr.ok) setPresetRoster({ defaultId: pr.defaultId, presets: pr.presets ?? [] });
     } catch { /* instance restarting */ }
-  }, [get, mergeJobs]);
+  }, [get, mergeJobs, refreshVisionGuard]);
 
   useEffect(() => {
     void refreshAll();
-    const timer = setInterval(() => { void get('/jobs').then((j) => { if (j.ok) mergeJobs(j.jobs ?? []); }).catch(() => {}); }, 3000);
+    const timer = setInterval(() => {
+      void refreshVisionGuard();
+      void get('/jobs').then((j) => { if (j.ok) mergeJobs(j.jobs ?? []); }).catch(() => {});
+    }, 3000);
     return () => clearInterval(timer);
-  }, [refreshAll, get, mergeJobs]);
+  }, [refreshAll, get, mergeJobs, refreshVisionGuard]);
 
   const act = useCallback(async (target: string, confirmName?: string) => {
     if (confirmName && !window.confirm(copy.confirmRestore(confirmName))) return;
@@ -772,6 +795,9 @@ function WorkersPanel({ ctx }: { ctx: any }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 13, lineHeight: 1.55 }}>
       <div style={{ fontSize: 19, fontWeight: 600, marginBottom: -2 }}>{copy.title}</div>
       <div style={{ opacity: 0.75 }}>{copy.intro}</div>
+      <div role="status" style={{ fontSize: 12, color: '#d29922' }}>
+        {visionGuardActive ? copy.visionRouteDisabled : copy.visionRouteUnverified}
+      </div>
 
       {sectionHeader(copy.integrations, integrationsCollapsed, toggleIntegrations)}
       {!integrationsCollapsed && (

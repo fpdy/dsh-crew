@@ -4,13 +4,17 @@
 
 <h1 align="center">DSH Crew</h1>
 
+> **分支兼容性说明（以下上游说明若有冲突，以此为准）：** 此分支在所有宿主上禁用 `deepseek-vision` 和粘贴图片的自动转写，保留宿主原生图片模型及显式调用的 `describe_image` 工具。
+> 更新源码后请重启 DSH。
+> 针对 DSH `0.2.1-alpha.2` 的离线、仅限宿主的安全契约测试不代表实际 worker 或视觉 API 兼容性已获验证；请参阅[视觉安全说明](./docs/vision-safety.md)和[正式 README](./README.md)，本翻译其余内容若有不一致，应视为历史上游文档。
+
 <p align="center">
   <strong><a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a> 插件：在 Claude Code / Codex / Antigravity / Grok 里把活派给 DSH agent，同时保留宿主原生的子代理界面。</strong><br />
   <sub>原生进度 UI &bull; 档位策略与失败升档 &bull; 派发护栏 &bull; 任务看板 &bull; DSH 会话进宿主 &bull; 原生优先视觉与生图 &bull; 一键安装</sub>
 </p>
 
 <p align="center">
-  <sub>npm: <code>@zseven-w/dsh-crew</code> &middot; 当前插件版本: <code>0.1.0-rc.11</code> &middot; 已在 DSH <code>0.1.1-rc.1</code> 验证</sub>
+  <sub>npm（上游）: <code>@zseven-w/dsh-crew</code> &middot; 分支基底: <code>0.1.0-rc.14</code> &middot; 分支离线宿主安全契约测试: DSH <code>0.2.1-alpha.2</code>（不代表实际 worker／视觉 API 兼容性）</sub>
 </p>
 
 <p align="center">

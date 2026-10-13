@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <sub>npm: <code>@zseven-w/dsh-crew</code> &middot; Current plugin release: <code>0.1.0-rc.11</code> &middot; Tested with DSH <code>0.1.1-rc.1</code></sub>
+  <sub>Fork base: <code>@zseven-w/dsh-crew@0.1.0-rc.14</code> &middot; Offline host safety checks: DSH <code>0.2.1-alpha.2</code> (not a live-model compatibility claim)</sub>
 </p>
 
 <p align="center">
@@ -27,6 +27,10 @@
   <img src="./docs/images/dsh-crew-overview.png" alt="DSH Crew — settings page" width="100%" />
 </p>
 <p align="center"><sub>The DSH Crew settings page — host integrations, dispatch policy, execution and the multimodal bridge</sub></p>
+
+## Fork compatibility notice
+
+This fork disables the `deepseek-vision` alias and automatic pasted-image transcription on all hosts. Native image-capable DSH routes and explicit `describe_image` / `generate_image` tools remain available. Restart DSH after updating an already-loaded Crew plugin; rebuilding or refreshing the panel alone does not replace the Host code. See [Vision safety and offline validation](<docs/vision-safety.md>).
 
 ## Why DSH Crew
 
@@ -63,7 +67,7 @@ With the bundle installed in a DSH profile, each worker is a first-class DSH ses
 
 ### 👁️ Vision and Image Generation
 
-DSH's models are text-only. `describe_image` now prefers DeepSeek's own VL model (`deepseek-v4-flash-vision-exp`) whenever a key is available, then falls back to the CLIs you already have — Claude, Codex, Grok, Antigravity — or any OpenAI-compatible API you configure. `generate_image` borrows the same CLIs' brush. Pasted images stay visible in the conversation and reach the model as text.
+DSH supports pasted images on configured image-capable model routes. This fork leaves those requests untouched and does not automatically send images to another provider for transcription. Explicit `describe_image` calls use the configured native/API/CLI pipeline; `generate_image` uses a configured image-generation provider.
 
 </td>
 </tr>
@@ -348,16 +352,16 @@ How to dispatch *well* — flash vs pro, self-contained briefs, safe parallelism
 
 ## Multimodal: vision and image generation
 
-**DeepSeek is a text-only model** and does not support image input or generation. This plugin sources these capabilities externally through MCP tools:
+**Image input depends on the selected DSH model's declared capabilities**, not the provider name alone. Crew's explicit multimodal tools are separate from DSH's native image-input support:
 
-**Native vision first**: when the vision provider is a built-in CLI (or explicitly `native`), `describe_image` first tries DeepSeek's own VL model `deepseek-v4-flash-vision-exp` (direct API call; key from `DEEPSEEK_API_KEY` or `~/.config/dsh-crew/.env`). Any failure degrades gracefully to the CLI provider chain below, which is kept as the fallback. Image generation is untouched — the native model only ever looks at pictures.
+**Native vision first**: when the vision provider is a built-in CLI (or explicitly `native`), `describe_image` first tries DeepSeek's own VL model `deepseek-v4-flash-vision-exp` (direct API call; key from `DEEPSEEK_API_KEY` or `~/.config/dsh-crew/.env`). Ordinary provider failures can fall back to the configured CLI chain. Caller cancellation stops the operation instead of starting another provider, and aborted results are not cached. Image generation is untouched — the native model only ever looks at pictures.
 
 | Tool | Description |
 |---|---|
 | `describe_image` | Answer questions by viewing images (screenshots, designs, charts, etc.), results cached by provider + model + image + question |
 | `generate_image` | Generate image from text description, save to specified absolute path; output is flat bitmap (requires OpenPencil for layer editing) |
 
-**Session image pasting**: In DSH, switch model to `DeepSeek (vision) ◉` to directly paste images. Images remain in session and display normally; the plugin appends transcribed text after them and strips images before sending—you see the image, the model reads the text. The transcription follows the same native-first ladder: DeepSeek's VL model when a key is available, then your configured CLI provider.
+**Session image pasting**: select a native image-capable model already configured in DSH. Crew does not register `DeepSeek (vision) ◉`, append transcripts to history, strip images or change the selected provider. Persisted `deepseek-vision` selections fail with an actionable `UNSUPPORTED_VISION_ROUTE` message rather than silently rerouting. The `vision_provider` setting configures the explicit tool only; it does not enable automatic transcription. The panel confirms the guard through `GET /_dsh/dsh-crew/vision-route/status`; a missing or invalid response means the updated Host has not been confirmed, so restart DSH.
 
 ### Configuration
 

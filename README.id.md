@@ -4,13 +4,17 @@
 
 <h1 align="center">DSH Crew</h1>
 
+> **Fork compatibility notice (overrides upstream claims below):** This fork disables `deepseek-vision` and automatic pasted-image transcription on every host; native host image models and explicit `describe_image` remain available.
+> Restart DSH after updating the source.
+> Offline host-only safety contract tests against DSH `0.2.1-alpha.2` do not establish real worker or vision API compatibility; see [vision safety](./docs/vision-safety.md) and the [canonical README](./README.md), and treat the rest of this translation as historical upstream documentation wherever inconsistent.
+
 <p align="center">
   <strong>Plugin <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>: dispatch pekerjaan ke agen DSH dari Claude Code / Codex / Antigravity / Grok, tanpa kehilangan UI subagent bawaan host.</strong><br />
   <sub>UI Progres Bawaan &bull; Kebijakan Tier &amp; Eskalasi &bull; Pagar Pembatas Dispatch &bull; Papan Job &bull; Sesi DSH di Dalam Host &bull; Vision &amp; Gen Gambar (Native-First) &bull; Instalasi Sekali Klik</sub>
 </p>
 
 <p align="center">
-  <sub>npm: <code>@zseven-w/dsh-crew</code> &middot; Rilis plugin saat ini: <code>0.1.0-rc.11</code> &middot; Diuji dengan DSH <code>0.1.1-rc.1</code></sub>
+  <sub>npm (upstream): <code>@zseven-w/dsh-crew</code> &middot; Fork base: <code>0.1.0-rc.14</code> &middot; Fork offline host-only safety contracts: DSH <code>0.2.1-alpha.2</code> (not real worker/vision API compatibility)</sub>
 </p>
 
 <p align="center">

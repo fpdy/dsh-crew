@@ -4,13 +4,17 @@
 
 <h1 align="center">DSH Crew</h1>
 
+> **Fork compatibility notice (overrides upstream claims below):** This fork disables `deepseek-vision` and automatic pasted-image transcription on every host; native host image models and explicit `describe_image` remain available.
+> Restart DSH after updating the source.
+> Offline host-only safety contract tests against DSH `0.2.1-alpha.2` do not establish real worker or vision API compatibility; see [vision safety](./docs/vision-safety.md) and the [canonical README](./README.md), and treat the rest of this translation as historical upstream documentation wherever inconsistent.
+
 <p align="center">
   <strong>Un plugin de <a href="https://github.com/deepseek-ai/deepseek-harness">DeepSeek Harness</a>: despachar trabajo a agentes DSH desde Claude Code / Codex / Antigravity / Grok, sin renunciar a la interfaz nativa de subagents del host.</strong><br />
   <sub>UI de progreso nativa &bull; Política de tier y escalado &bull; Barreras de despacho &bull; Tablón de trabajos &bull; Sesiones DSH en el host &bull; Visión y generación de imágenes (nativo primero) &bull; Instalación con un clic</sub>
 </p>
 
 <p align="center">
-  <sub>npm: <code>@zseven-w/dsh-crew</code> &middot; Versión actual del plugin: <code>0.1.0-rc.11</code> &middot; Probado con DSH <code>0.1.1-rc.1</code></sub>
+  <sub>npm (upstream): <code>@zseven-w/dsh-crew</code> &middot; Fork base: <code>0.1.0-rc.14</code> &middot; Fork offline host-only safety contracts: DSH <code>0.2.1-alpha.2</code> (not real worker/vision API compatibility)</sub>
 </p>
 
 <p align="center">

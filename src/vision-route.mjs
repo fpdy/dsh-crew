@@ -1,139 +1,60 @@
-// Vision route: lets users paste images into DSH conversations on the
-// text-only DeepSeek models.
+// Compatibility guard for the former "deepseek-vision" admission adapter.
 //
-// Two cooperating pieces:
-// 1. A duck-typed LLM adapter registered as provider "deepseek-vision" that
-//    advertises image input modality (passing the api-proxy admission gate)
-//    and delegates every stream straight back to "deepseek-official".
-//    registerAdapter does no instanceof check, so a plain object keeps the
-//    zero-@deepseek-imports realm discipline.
-// 2. A global agent/pre-step waterfall that appends a text transcription (via
-//    the multimodal describeFile pipeline) after each ImageBlock. The image
-//    block itself stays in history so the conversation still shows the picture;
-//    the adapter above drops image blocks on the way to the model, which is
-//    what keeps the DeepSeek serializer (it throws on any image block) happy.
+// A transparent alias needs a public, generation-bound delegate handle that
+// preserves caller controls, retry policy and replay ownership. The current
+// host's full-config llm.prepareCall() is NOT that handle: controls are frozen
+// before adapter.prepareCall(provider, model, signal) can see them. Calling
+// llm.stream() later would instead resolve a different connection generation.
+//
+// This fork therefore does not register an image-capable alias on ANY host.
+// Legacy hosts are not an implicit compatibility fallback. Native host image
+// routes and the explicit describe_image tool remain independent of this guard.
+// Keep the entry point structural: no @deepseek-ai imports or private registry.
 
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
-import { homedir } from 'node:os';
-import { createHash } from 'node:crypto';
-import { describeFileWithProvenance } from './multimodal.mjs';
-import { tr } from './i18n.mjs';
+export const VISION_PROVIDER = 'deepseek-vision';
+export const VISION_ROUTE_ERROR = 'UNSUPPORTED_VISION_ROUTE';
 
-const VISION_PROVIDER = 'deepseek-vision';
-const DELEGATE = 'deepseek-official';
-const ATTACH_DIR = join(homedir(), '.config', 'dsh-crew', 'attachments');
+export const VISION_ROUTE_MESSAGE =
+  'dsh-crew: "deepseek-vision" is disabled because this fork has no safe public '
+  + 'generation-bound delegate binding. Select an image-capable model configured '
+  + 'in DSH for pasted images, or use describe_image explicitly. '
+  + 'Changing vision_provider only configures the tool; it does not enable automatic transcription.';
 
-const EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+/** Safe to expose to the panel: contains no credentials or provider settings. */
+export function visionRouteStatus() {
+  return { provider: VISION_PROVIDER, supported: false, registered: false,
+    code: VISION_ROUTE_ERROR, message: VISION_ROUTE_MESSAGE };
+}
 
-const TRANSCRIPT_PREFIX = (name) => tr(`[图片「${name}」已由视觉桥转写]`, `[Image "${name}" transcribed by the vision bridge]`);
-// Both locales' prefixes must be recognised: the user may switch language after
-// a transcription was written, and re-transcribing would duplicate it.
-const TRANSCRIPT_MARKERS = ['[图片「', '[Image "'];
-
-/** True when `block` is a transcription this route wrote for `imageBlock`. */
-function isTranscriptFor(block, imageBlock) {
-  if (block?.type !== 'text' || typeof block.text !== 'string') return false;
-  const name = imageBlock?.attachment?.name;
-  if (name && (block.text.startsWith(`[图片「${name}」`) || block.text.startsWith(`[Image "${name}"`))) return true;
-  return TRANSCRIPT_MARKERS.some((m) => block.text.startsWith(m));
+function unsupportedRoute() {
+  const error = new Error(VISION_ROUTE_MESSAGE);
+  error.name = 'CrewVisionCompatibilityError';
+  error.code = VISION_ROUTE_ERROR;
+  return error;
 }
 
 /**
- * Images live on in history for the UI, but never reach the model: the
- * transcription that follows each one already carries the content, so the image
- * block is dropped rather than replaced with a placeholder.
+ * Do not advertise images, access attachments, mutate history, or transcribe in
+ * agent/pre-step. Guard persisted selections in agent/request, where resolved
+ * request controls are available, and pass every native route through unchanged.
+ * getConfig is retained in the signature for older callers, but never evaluated.
  */
-function stripImages(content) {
-  if (!Array.isArray(content)) return content;
-  if (!content.some((b) => b?.type === 'image')) return content;
-  const out = content.filter((b) => b?.type !== 'image');
-  return out.length > 0 ? out : [{ type: 'text', text: tr('[图片已由视觉桥转写，详见随后的描述]', '[image transcribed by the vision bridge — see the description that follows]') }];
-}
-
-export function installVisionRoute(ctx, getConfig) {
-  const llm = ctx.llm;
-  const disposers = [];
-
-  const adapter = {
-    providerInfo: (p) => ({ id: p, name: tr('DeepSeek (视觉)', 'DeepSeek (Vision)') }),
-    providerRetryPolicy: () => undefined,
-    async listModels(p) {
-      const models = await llm.listModels(DELEGATE);
-      return models.map((m) => ({ ...m, provider: p, name: `${m.name} ◉`, inputModalities: ['text', 'image'] }));
-    },
-    async resolveModel(p, model, signal) {
-      const base = await llm.resolveModelInfo(DELEGATE, model, signal);
-      return { ...base, provider: p, name: `${base.name} ◉`, inputModalities: ['text', 'image'] };
-    },
-    async *stream(options) {
-      // Safety net: any image block that survived pre-step would make the
-      // DeepSeek serializer throw — strip defensively.
-      // NOTE: routing reads top-level options.provider (adapterStream uses
-      // this.registration(options.provider)); rewriting anything else
-      // self-recurses into this adapter.
-      const messages = options.messages?.map((m) => ({ ...m, content: stripImages(m.content) })) ?? options.messages;
-      yield* llm.stream({ ...options, provider: DELEGATE, ...(messages === undefined ? {} : { messages }) });
-    },
+export function installVisionRoute(ctx, _getConfig) {
+  ctx.logger?.warn?.(VISION_ROUTE_MESSAGE);
+  // Wrap the host's append-based model-selection listeners, including ones
+  // registered before Crew. Appending here would inspect an intermediate seed
+  // and could reject a native selection that another listener is about to set.
+  // This diagnostic is not an admission guarantee for arbitrary later prepends
+  // or short-circuiting plugins: the unregistered alias still fails NO_ADAPTER.
+  const dispose = ctx.on('agent/request', async (_payload, next) => {
+    const request = await next();
+    if (request.provider === VISION_PROVIDER) throw unsupportedRoute();
+    return request;
+  }, { prepend: true });
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    dispose();
   };
-  const handle = llm.registerAdapter([VISION_PROVIDER], adapter);
-  disposers.push(() => handle());
-
-  // Transcribe pending images before the step enters history. Applies to every
-  // agent in this host: on a DS-only deployment any surviving image block is a
-  // hard error downstream, so rewriting is strictly better than crashing.
-  disposers.push(ctx.on('agent/pre-step', async (payload, next) => {
-    const decision = await next();
-    if (decision.kind !== 'enter') return decision;
-    if (getConfig().vision_provider === 'off') return decision;
-    let changed = false;
-    const rewritten = [];
-    for (const message of decision.messages) {
-      if (!Array.isArray(message.content) || !message.content.some((b) => b?.type === 'image')) {
-        rewritten.push(message);
-        continue;
-      }
-      const content = [];
-      for (const [i, block] of message.content.entries()) {
-        if (block?.type !== 'image') { content.push(block); continue; }
-        content.push(block); // keep the image so the conversation still shows it
-        // Steps replay the whole history: skip anything already transcribed,
-        // otherwise every step would append another copy.
-        if (isTranscriptFor(message.content[i + 1], block)) continue;
-        changed = true;
-        try {
-          const stored = await ctx.attachments.readImage(block.attachment, payload.signal);
-          const sha = createHash('sha256').update(stored.data).digest('hex').slice(0, 12);
-          const ext = EXT[block.attachment?.mediaType] ?? 'png';
-          mkdirSync(ATTACH_DIR, { recursive: true });
-          const path = join(ATTACH_DIR, `${sha}.${ext}`);
-          if (!existsSync(path)) writeFileSync(path, stored.data);
-          const name = block.attachment?.name ?? `${sha}.${ext}`;
-          const { text: desc, provider } = await describeFileWithProvenance(getConfig, path, tr(
-            '详细描述这张图片：整体内容、布局结构、可见文字（逐字）、颜色与显著元素。',
-            'Describe this image in detail: overall content, layout, any visible text (verbatim), colours and notable elements.'));
-          ctx.logger?.info?.(`dsh-crew: vision transcript for ${path} via ${provider}`);
-          content.push({
-            type: 'text',
-            text: `${TRANSCRIPT_PREFIX(name)}\n${desc}\n${tr(
-              `[原图: ${path} — 需要更多细节可用 describe_image 工具带具体问题查看]`,
-              `[Original: ${path} — for more detail, ask the describe_image tool a specific question]`)}`,
-          });
-        } catch (err) {
-          // Same prefix as a successful transcription so the dedup check above
-          // treats it as handled — otherwise a broken provider would append a
-          // fresh failure notice on every step.
-          content.push({
-            type: 'text',
-            text: `${TRANSCRIPT_PREFIX(block.attachment?.name ?? tr('图片', 'image'))}\n${tr(`[转写失败: ${err?.message ?? err}]`, `[transcription failed: ${err?.message ?? err}]`)}`,
-          });
-        }
-      }
-      rewritten.push({ ...message, content });
-    }
-    return changed ? { kind: 'enter', messages: rewritten } : decision;
-  }));
-
-  ctx.logger?.info?.('dsh-crew: vision route registered (provider "deepseek-vision" + pre-step transcription)');
-  return () => { for (const d of disposers.reverse()) { try { d(); } catch {} } };
 }

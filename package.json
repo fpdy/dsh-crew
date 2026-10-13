@@ -42,7 +42,7 @@
     "react-dom": "^18.0.0"
   },
   "dshHostRuntime": {
-    "_comment": "Documentation only - these @deepseek-ai/* packages are provided by the DSH HOST at runtime (worker.cordis.yml composition + host profile), never by this package. They were peerDependencies in <=0.1.0-rc.2, but npm 7+ auto-installs peers (optional ones included when placeable), and the pinned versions ERESOLVE against the host newer transitive tree (issue #3): a plain npm install of @zseven-w/dsh-crew failed. Keep these pins in sync with the DSH version this release is tested against (README badge).",
+    "_comment": "Documentation only - these @deepseek-ai/* packages are provided by the DSH HOST at runtime (worker.cordis.yml composition + host profile), never by this package. They were peerDependencies in <=0.1.0-rc.2, but npm 7+ auto-installs peers (optional ones included when placeable), and the pinned versions ERESOLVE against the host newer transitive tree (issue #3). The pins below describe the historical standalone worker composition, not this fork's supported-host range. Offline fork safety contracts against DSH 0.2.1-alpha.2 are separate from live-worker compatibility; the deepseek-vision alias is disabled. See docs/vision-safety.md.",
     "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
     "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.6",
     "@deepseek-ai/dsh-agent-spine-demo": "0.1.0-rc.6",
@@ -125,6 +125,7 @@
     ".mcp.json",
     "README.md",
     "README.*.md",
+    "docs/vision-safety.md",
     "docs/images/dsh-crew-logo.png",
     "docs/images/dsh-crew-overview.png",
     "docs/images/dsh-crew-host.png",
