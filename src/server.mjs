@@ -16,6 +16,7 @@ const server = new McpServer({ name: 'dsh-crew', version: '0.1.0-rc.14' });
 
 const tierSchema = z.enum(['flash', 'pro']).optional().describe('Worker model tier. flash = mechanical, well-scoped work (single-file edits, lookups, formatting); pro = multi-file changes, debugging, design judgment. Omit to use the session default. Ignored when worker= is set.');
 const effortSchema = z.enum(['off', 'high', 'max']).optional().describe('Reasoning effort for the worker. Omit to use the session default. With worker= it only applies when passed explicitly and the profile supports it (agy maps to low/medium/high).');
+const fastModeSchema = z.boolean().optional().describe('Crew-only Fast mode: priority service tier on a metadata-supported openai-codex route in the DSH hub. Explicit true/false overrides the selected tier setting. Unsupported routes, standalone mode, external CLI workers and unreachable/old hubs are refused, never silently downgraded.');
 const workerSchema = z.string().optional().describe('Named CLI worker profile (e.g. "agy" or "grok"). Explicit opt-in only: set it when the user explicitly asks for that external coding CLI, never as a default. When set, dispatch bypasses tier/mode and runs the task through that CLI; the profile pins backend×model×effort. See dsh_worker_config output, worker_profiles field, for the available profiles.');
 const allowConcurrentCwdSchema = z.boolean().optional().describe('Allow this dispatch even though another running worker already holds the same cwd (workspace) lock. Default false: concurrent writers corrupt a shared repo, so the second dispatch is refused with the holder info instead of queueing. Set true only for read-only tasks.');
 
@@ -25,6 +26,7 @@ const allowConcurrentCwdSchema = z.boolean().optional().describe('Allow this dis
 // edited on the DSH settings page); dsh_worker_config overrides per session.
 import { readGlobalConfig } from './install/install.mjs';
 import { describeBindings, resolveTierBinding } from './tier-binding.mjs';
+import { resolveFastMode, requireFastHub } from './fast-mode.mjs';
 const globalDefaults = readGlobalConfig();
 const sessionConfig = {
   enabled: true,
@@ -42,6 +44,8 @@ const sessionConfig = {
   flash_model: globalDefaults.flash_model ?? '',
   pro_provider: globalDefaults.pro_provider ?? '',
   pro_model: globalDefaults.pro_model ?? '',
+  pro_fast_mode: globalDefaults.pro_fast_mode,
+  flash_fast_mode: globalDefaults.flash_fast_mode,
   // WPC9: max worker→worker nesting depth before a dispatch is refused.
   origin_depth_limit: DEFAULT_ORIGIN_DEPTH_LIMIT,
 };
@@ -129,11 +133,13 @@ function dispatchDisabled() {
   });
 }
 
-async function resolveMode() {
-  if (sessionConfig.mode === 'standalone') return 'standalone';
+async function resolveMode(fastMode = false) {
+  if (sessionConfig.mode === 'standalone') { requireFastHub('standalone', fastMode); return 'standalone'; }
   const up = await hubAvailable();
   if (sessionConfig.mode === 'hub' && !up) throw new Error('session mode is "hub" but the DSH workers hub is not reachable');
-  return up ? 'hub' : 'standalone';
+  const mode = up ? 'hub' : 'standalone';
+  requireFastHub(mode, fastMode);
+  return mode;
 }
 
 server.registerTool('dsh_run_worker', {
@@ -144,11 +150,12 @@ server.registerTool('dsh_run_worker', {
     tier: tierSchema,
     effort: effortSchema,
     worker: workerSchema,
+    fast_mode: fastModeSchema,
     cwd: z.string().optional().describe('Workspace directory for the worker. Relative paths resolve against the caller\'s current workspace; "." or "current" mean the current workspace. Omit for the current workspace.'),
     timeout_seconds: z.number().int().positive().max(7200).optional(),
     allow_concurrent_cwd: allowConcurrentCwdSchema,
   },
-}, async ({ task, tier, effort, worker, cwd, timeout_seconds, allow_concurrent_cwd }) => {
+}, async ({ task, tier, effort, worker, cwd, timeout_seconds, allow_concurrent_cwd, fast_mode }) => {
   if (!sessionConfig.enabled) return dispatchDisabled();
   const workDir = resolveWorkerCwd(cwd);
   const e = effort ?? sessionConfig.default_effort;
@@ -159,6 +166,7 @@ server.registerTool('dsh_run_worker', {
   // hub/standalone tier logic entirely (no tier policy, no escalation — the
   // profile pins backend×model×effort). Calls without worker= are untouched.
   if (worker) {
+    requireFastHub('cli', fast_mode ?? false);
     const profile = resolveProfile(worker); // throws listing the available profile names
     const origin = extendOrigin({ inherited: INHERITED_ORIGIN, backend: profile.backend, cwd: workDir, source: ORCHESTRATOR, depthLimit });
     if (!origin.ok) return originRefusal(origin);
@@ -176,7 +184,9 @@ server.registerTool('dsh_run_worker', {
   }
 
   const runOnce = async (t) => {
-    if ((await resolveMode()) === 'hub') {
+    const fastMode = resolveFastMode(t, sessionConfig, fast_mode);
+    if ((await resolveMode(fastMode)) === 'hub') {
+      if (fastMode) await hub.checkFastMode(bindingForTier(t));
       const origin = extendOrigin({ inherited: INHERITED_ORIGIN, backend: 'hub', cwd: workDir, source: ORCHESTRATOR, depthLimit });
       if (!origin.ok) return { refusal: originRefusal(origin) };
       let lock;
@@ -188,7 +198,7 @@ server.registerTool('dsh_run_worker', {
       }
       let spawned;
       try {
-        spawned = await hub.spawn({ task, tier: t, effort: e, cwd: workDir, source: ORCHESTRATOR, preset: presetForTier(t), ...bindingForTier(t), origin_chain: origin.origin.chain, origin_depth: origin.origin.depth });
+        spawned = await hub.spawn({ task, tier: t, effort: e, cwd: workDir, source: ORCHESTRATOR, preset: presetForTier(t), ...bindingForTier(t), fast_mode: fastMode, origin_chain: origin.origin.chain, origin_depth: origin.origin.depth });
         updateCwdLockHolder({ cwd: workDir, jobId: spawned.id });
         hubOrigins.set(spawned.id, origin.origin);
       } catch (err) {
@@ -217,6 +227,7 @@ server.registerTool('dsh_run_worker', {
   };
 
   const firstTier = applyTierPolicy(tier);
+  const firstFastMode = resolveFastMode(firstTier, sessionConfig, fast_mode);
   let res = await runOnce(firstTier);
   if (res.refusal) return res.refusal;
   let job = res.view;
@@ -226,6 +237,11 @@ server.registerTool('dsh_run_worker', {
   // pro — unless the policy pins the tier to flash.
   if (job.status === 'failed' && sessionConfig.escalate_on_failure
       && firstTier === 'flash' && sessionConfig.tier_policy !== 'flash-only') {
+    // A destination binding is re-resolved, but an automatic retry must never
+    // silently turn off Fast. The caller can explicitly retry with false.
+    if (firstFastMode && !resolveFastMode('pro', sessionConfig, fast_mode)) {
+      return text({ ...job, escalation_skipped: 'fast_mode_would_be_disabled' });
+    }
     const firstError = job.error ?? job.stopReason ?? 'unknown failure';
     res = await runOnce('pro');
     if (res.refusal) return res.refusal;
@@ -239,11 +255,15 @@ server.registerTool('dsh_run_worker', {
 server.registerTool('dsh_worker_probe', {
   title: 'Probe a configured worker model route',
   description: 'Explicitly test one DSH-configured provider/model with a small no-op tool-call request. Requires the hub. Does not start a worker, touch files, or change bindings; it may consume one model request. A listed provider is not proof of agent/tool support. Results are observations at checked_at, not a permanent capability guarantee.',
-  inputSchema: { tier: z.enum(['flash', 'pro']).optional(), provider: z.string().optional(), model: z.string().optional() },
-}, async ({ tier, provider, model }) => {
+  inputSchema: { tier: z.enum(['flash', 'pro']).optional(), provider: z.string().optional(), model: z.string().optional(), fast_mode: fastModeSchema },
+}, async ({ tier, provider, model, fast_mode }) => {
   if (!(await hubAvailable())) return text({ status: 'hub_unavailable', tool_call_verified: false });
-  const bound = bindingForTier(tier ?? sessionConfig.default_tier);
-  return text(await hub.probe({ provider: provider?.trim() || bound.provider, model: model?.trim() || bound.model }));
+  const t = applyTierPolicy(tier);
+  const bound = bindingForTier(t);
+  const fastMode = resolveFastMode(t, sessionConfig, fast_mode);
+  const binding = { provider: provider?.trim() || bound.provider, model: model?.trim() || bound.model };
+  if (fastMode) await hub.checkFastMode(binding);
+  return text(await hub.probe({ ...binding, fast_mode: fastMode }));
 });
 
 server.registerTool('dsh_worker_config', {
@@ -263,6 +283,8 @@ server.registerTool('dsh_worker_config', {
     flash_model: z.string().optional().describe('Model id for the flash tier, as that provider names it (e.g. a local Ollama model). Empty string restores the default.'),
     pro_provider: z.string().optional().describe('LLM provider route the pro tier dispatches to. Same rules as flash_provider.'),
     pro_model: z.string().optional().describe('Model id for the pro tier. Empty string restores the default.'),
+    pro_fast_mode: z.boolean().optional().describe('Default Crew Fast mode for pro dispatches (hub-only, metadata-supported openai-codex)'),
+    flash_fast_mode: z.boolean().optional().describe('Default Crew Fast mode for flash dispatches (hub-only, metadata-supported openai-codex)'),
     origin_depth_limit: z.number().int().min(1).max(32).optional().describe('Max worker→worker origin-chain depth (default 3). Deeper dispatches are refused to stop recursive self-amplification; raise only for deliberate deep delegation.'),
     reset: z.boolean().optional().describe('true = restore all defaults first'),
   },
@@ -309,14 +331,16 @@ server.registerTool('dsh_spawn_worker', {
     tier: tierSchema,
     effort: effortSchema,
     worker: workerSchema,
+    fast_mode: fastModeSchema,
     cwd: z.string().optional().describe('Workspace directory for the worker. Relative paths resolve against the caller\'s current workspace; "." or "current" mean the current workspace. Omit for the current workspace.'),
     allow_concurrent_cwd: allowConcurrentCwdSchema,
   },
-}, async ({ task, tier, effort, worker, cwd, allow_concurrent_cwd }) => {
+}, async ({ task, tier, effort, worker, cwd, allow_concurrent_cwd, fast_mode }) => {
   if (!sessionConfig.enabled) return dispatchDisabled();
   const workDir = resolveWorkerCwd(cwd);
   const depthLimit = depthLimitNow();
   if (worker) {
+    requireFastHub('cli', fast_mode ?? false);
     // CLI profile dispatch; no hub/standalone involvement, no tier policy.
     const profile = resolveProfile(worker);
     const origin = extendOrigin({ inherited: INHERITED_ORIGIN, backend: profile.backend, cwd: workDir, source: ORCHESTRATOR, depthLimit });
@@ -331,7 +355,9 @@ server.registerTool('dsh_spawn_worker', {
   }
   const t = applyTierPolicy(tier);
   const e = effort ?? sessionConfig.default_effort;
-  if ((await resolveMode()) === 'hub') {
+  const fastMode = resolveFastMode(t, sessionConfig, fast_mode);
+  if ((await resolveMode(fastMode)) === 'hub') {
+    if (fastMode) await hub.checkFastMode(bindingForTier(t));
     const origin = extendOrigin({ inherited: INHERITED_ORIGIN, backend: 'hub', cwd: workDir, source: ORCHESTRATOR, depthLimit });
     if (!origin.ok) return originRefusal(origin);
     let lock;
@@ -343,7 +369,7 @@ server.registerTool('dsh_spawn_worker', {
     }
     let spawned;
     try {
-      spawned = await hub.spawn({ task, tier: t, effort: e, cwd: workDir, source: ORCHESTRATOR, preset: presetForTier(t), ...bindingForTier(t), origin_chain: origin.origin.chain, origin_depth: origin.origin.depth });
+      spawned = await hub.spawn({ task, tier: t, effort: e, cwd: workDir, source: ORCHESTRATOR, preset: presetForTier(t), ...bindingForTier(t), fast_mode: fastMode, origin_chain: origin.origin.chain, origin_depth: origin.origin.depth });
       updateCwdLockHolder({ cwd: workDir, jobId: spawned.id });
       hubOrigins.set(spawned.id, origin.origin);
     } catch (err) {

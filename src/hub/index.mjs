@@ -11,6 +11,7 @@ import { createShardWriter, readMergedStatus } from '../status-shard.mjs';
 import { procAlive, killWorkerProcess, parsePid, ProcKillRefused } from '../proc-kill.mjs';
 import { installWorkerQuestionHandoff } from '../worker-question.mjs';
 import { probeProvider } from '../provider-probe.mjs';
+import { fastModeSupport, requireFastModeSupport, resolveFastMode, terminalResponseServiceTier } from '../fast-mode.mjs';
 
 // No @deepseek-ai imports here on purpose: this plugin is loaded into the
 // profile realm, and importing our own package copies would create duplicate
@@ -18,7 +19,7 @@ import { probeProvider } from '../provider-probe.mjs';
 // below is either plain data or inlined logic that only touches ctx APIs.
 
 /** Inlined from @deepseek-ai/dsh-agent model-selection.ts (same semantics). */
-function installModelSelection(agentCtx, selection) {
+export function installModelSelection(agentCtx, selection, onRequest = () => {}) {
   agentCtx.on('system-prompt/assemble', async (_assembly, _cause, next) => {
     const selected = selection.current;
     const assembled = await next();
@@ -27,15 +28,17 @@ function installModelSelection(agentCtx, selection) {
     return { ...assembled, variables: { ...assembled.variables, provider: selected.provider, model: selected.model } };
   });
   agentCtx.on('agent/request', async (_payload, next) => {
+    onRequest();
     const resolved = await next();
     const selected = selection.assembled;
     if (selected === undefined) return resolved;
-    const { reasoningEffort: _inherited, ...rest } = resolved;
+    const { reasoningEffort: _inherited, serviceTier: _inheritedTier, ...rest } = resolved;
     return {
       ...rest, provider: selected.provider, model: selected.model,
       ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),
+      ...(selected.fast_mode ? { serviceTier: 'priority' } : {}),
     };
-  });
+  }, { prepend: true });
 }
 
 /** Inlined shape of createUserMessage (role + fresh id, frozen). */
@@ -109,6 +112,7 @@ export class WorkerRegistry {
       cwd: job.cwd, turn: job.turn, step: job.step, currentTool: job.currentTool,
       toolCalls: job.toolCalls, tokens: job.tokens, mode: 'hub',
       startedAt: job.startedAt, endedAt: job.endedAt,
+      fast_mode_requested: job.fast_mode_requested, response_service_tier: job.response_service_tier,
       ...(job.questions === undefined ? {} : { questions: job.questions }),
     };
     if (withResult) {
@@ -122,14 +126,17 @@ export class WorkerRegistry {
     this.shard.publish([...this.jobs.values()].map((j) => this.view(j)));
   }
 
-  async spawn({ task, tier = 'flash', effort = 'max', cwd, source = 'api', provider, model, preset }) {
+  async spawn({ task, tier = 'flash', effort = 'max', cwd, source = 'api', provider, model, preset, fast_mode }) {
     if (!TIERS.includes(tier)) throw new Error(`unknown tier "${tier}"`);
     // An explicit {provider, model} from the caller wins (the MCP process owns
     // session-level overrides, exactly as it does for presets); otherwise the
     // hub's own stored config decides, and failing that the tier default.
-    const bound = resolveTierBinding(tier, this.getConfig?.() ?? {});
+    const cfg = this.getConfig?.() ?? {};
+    const bound = resolveTierBinding(tier, cfg);
+    const fastMode = resolveFastMode(tier, cfg, fast_mode);
     const resolvedProvider = typeof provider === 'string' && provider.trim() !== '' ? provider.trim() : bound.provider;
     const resolvedModel = typeof model === 'string' && model.trim() !== '' ? model.trim() : bound.model;
+    if (fastMode) await requireFastModeSupport(this.ctx.llm, { provider: resolvedProvider, model: resolvedModel });
     if (!['off', 'high', 'max'].includes(effort)) throw new Error(`unknown effort "${effort}"`);
     // Accept POSIX, Windows drive (D:\x, C:/x) and UNC (\\srv\share) roots.
     if (!isAbsoluteCwd(cwd)) throw new Error('cwd must be an absolute path');
@@ -144,15 +151,15 @@ export class WorkerRegistry {
       id, sessionId, tier, model: resolvedModel, provider: resolvedProvider, effort, task, source, cwd: cwdPath,
       status: 'running', turn: 0, step: 0, currentTool: null, toolCalls: 0,
       tokens: { input: 0, output: 0, reasoning: 0 },
+      fast_mode_requested: fastMode, response_service_tier: null,
       startedAt: new Date().toISOString(), endedAt: null,
       result: null, error: null, stopReason: null, handle: null, waiters: [],
       texts: [],
     };
     this.jobs.set(id, job);
 
-    const selection = { provider: resolvedProvider, model: resolvedModel, reasoningEffort: effort };
+    const selection = { provider: resolvedProvider, model: resolvedModel, reasoningEffort: effort, fast_mode: fastMode };
     const presets = this.ctx.get('agentPresets');
-    const cfg = this.getConfig?.() ?? {};
     const wanted = preset ?? (tier === 'flash' ? cfg.preset_flash : cfg.preset_pro);
     const presetId = presets === undefined
       ? undefined
@@ -161,12 +168,17 @@ export class WorkerRegistry {
     const onEvent = (session, event) => {
       switch (event.type) {
         case 'step/start':
+          job.response_service_tier = null;
           job.turn = event.data?.turn ?? job.turn;
           job.step = event.data?.step ?? job.step;
           break;
         case 'tool/call': job.currentTool = event.data?.name ?? null; job.toolCalls += 1; break;
         case 'tool/result': job.currentTool = null; break;
+        case 'assistant/attempt':
+          job.response_service_tier = terminalResponseServiceTier(event.data?.stream);
+          break;
         case 'assistant/message': {
+          job.response_service_tier = terminalResponseServiceTier(event.data?.stream);
           const u = event.data?.usage;
           if (u) {
             job.tokens.input += u.inputTokens ?? 0;
@@ -192,7 +204,10 @@ export class WorkerRegistry {
         meta: { cwd: cwdPath, ...(presetId === undefined ? {} : { agentPreset: presetId }) },
         agentOptions: { provider: selection.provider, model: selection.model },
         setup: async (agentCtx) => {
-          installModelSelection(agentCtx, { current: selection, assembled: undefined });
+          installModelSelection(agentCtx, { current: selection, assembled: undefined }, () => {
+            job.response_service_tier = null;
+            this.publish();
+          });
           if (presets !== undefined) await presets.mount(agentCtx, presetId);
           // Nobody attends a worker session, so a question would wait forever
           // (#13). Claim this agent's requests ahead of the Web answerer.
@@ -377,7 +392,7 @@ export async function apply(ctx) {
         try {
           const body = await readBody(req);
           if (typeof body.provider !== 'string' || body.provider.trim() === '' || typeof body.model !== 'string' || body.model.trim() === '') return sendJson(res, 400, { ok: false, error: 'provider and model required' });
-          const result = await probeProvider(ctx.llm, { provider: body.provider.trim(), model: body.model.trim() });
+          const result = await probeProvider(ctx.llm, { provider: body.provider.trim(), model: body.model.trim(), ...(body.fast_mode === undefined ? {} : { fast_mode: body.fast_mode }) });
           return sendJson(res, 200, { ok: true, result });
         } catch { return sendJson(res, 400, { ok: false, error: 'invalid probe request' }); }
       },
@@ -503,6 +518,42 @@ export async function apply(ctx) {
         } catch (err) {
           return sendJson(res, 500, { ok: false, error: err?.message ?? String(err) });
         }
+      },
+    }));
+
+    // Capability checks use exact adapter metadata, never a paid model request.
+    disposers.push(webServer.register({
+      kind: 'exact', path: `${ROUTE_BASE}/fast-mode/status`,
+      handler: async (req, res) => {
+        if (!isLoopbackRequest(req)) return sendJson(res, 403, { ok: false, error: 'loopback only' });
+        if (req.method !== 'GET') return sendJson(res, 405, { ok: false, error: 'GET only' }, { allow: 'GET' });
+        try {
+          const { readGlobalConfig } = await import('../install/install.mjs');
+          const cfg = readGlobalConfig();
+          const tiers = Object.fromEntries(await Promise.all(TIERS.map(async (tier) => {
+            const binding = resolveTierBinding(tier, cfg);
+            return [tier, { ...binding, ...await fastModeSupport(ctx.llm, binding) }];
+          })));
+          return sendJson(res, 200, { ok: true, protocol: 1, tiers });
+        } catch { return sendJson(res, 500, { ok: false, error: 'Fast metadata unavailable' }); }
+      },
+    }));
+
+    // Session bindings can differ from global settings. The MCP client checks
+    // this protocol before acquiring a lock or sending a job to an old hub.
+    disposers.push(webServer.register({
+      kind: 'exact', path: `${ROUTE_BASE}/fast-mode/check`,
+      handler: async (req, res) => {
+        if (!isLoopbackRequest(req)) return sendJson(res, 403, { ok: false, error: 'loopback only' });
+        if (req.method !== 'POST') return sendJson(res, 405, { ok: false, error: 'POST only' }, { allow: 'POST' });
+        try {
+          const body = await readBody(req);
+          if (typeof body.provider !== 'string' || !body.provider.trim() || typeof body.model !== 'string' || !body.model.trim()) {
+            return sendJson(res, 400, { ok: false, error: 'provider and model required' });
+          }
+          const result = await fastModeSupport(ctx.llm, { provider: body.provider.trim(), model: body.model.trim() });
+          return sendJson(res, 200, { ok: true, protocol: 1, ...result });
+        } catch { return sendJson(res, 400, { ok: false, error: 'invalid Fast metadata request' }); }
       },
     }));
 

@@ -126,6 +126,8 @@
     "README.md",
     "README.*.md",
     "docs/vision-safety.md",
+    "docs/fast-mode.md",
+    "host-compat",
     "docs/images/dsh-crew-logo.png",
     "docs/images/dsh-crew-overview.png",
     "docs/images/dsh-crew-host.png",

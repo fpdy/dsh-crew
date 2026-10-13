@@ -6,6 +6,7 @@ import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync, readd
 import { dirname, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { validateFastModeConfig } from '../fast-mode.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MARKETPLACE_NAME = 'dsh-crew';
@@ -106,18 +107,33 @@ export const GLOBAL_CONFIG_DEFAULTS = {
   flash_model: '',
   pro_provider: '',
   pro_model: '',
+  pro_fast_mode: false,
+  flash_fast_mode: false,
   // Hub-mode agent preset per tier: 'default' follows the DSH roster default.
   preset_flash: 'minimal',
   preset_pro: 'default',
 };
 
 export function readGlobalConfig() {
-  return { ...GLOBAL_CONFIG_DEFAULTS, ...readJson(GLOBAL_CONFIG_FILE, {}) };
+  let raw;
+  try { raw = readFileSync(GLOBAL_CONFIG_FILE, 'utf8'); }
+  catch (error) {
+    if (error?.code === 'ENOENT') return { ...GLOBAL_CONFIG_DEFAULTS };
+    throw error;
+  }
+  let stored;
+  try { stored = JSON.parse(raw); }
+  catch { throw new TypeError('Crew global config must contain valid JSON; existing config was not changed'); }
+  if (stored === null || typeof stored !== 'object' || Array.isArray(stored)) {
+    throw new TypeError('Crew global config must be a JSON object; existing config was not changed');
+  }
+  return validateFastModeConfig({ ...GLOBAL_CONFIG_DEFAULTS, ...stored });
 }
 
 export function writeGlobalConfig(patch) {
-  mkdirSync(CONFIG_DIR_HOME(), { recursive: true });
+  validateFastModeConfig(patch ?? {});
   const next = { ...readGlobalConfig() };
+  mkdirSync(CONFIG_DIR_HOME(), { recursive: true });
   for (const [k, v] of Object.entries(patch ?? {})) {
     if (v !== undefined && k in GLOBAL_CONFIG_DEFAULTS) next[k] = v;
   }

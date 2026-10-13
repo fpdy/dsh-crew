@@ -32,11 +32,15 @@
 
 この fork は、すべてのホストで `deepseek-vision` と貼り付け画像の自動転写を無効にします。DSH のネイティブ画像対応モデルと、明示的な `describe_image` / `generate_image` 呼び出しは引き続き利用できます。起動済みの Crew を更新した場合は DSH を再起動してください。パネルの再ビルドや画面の再読み込みだけでは、ホスト側のコードは置き換わりません。検証範囲と実行手順は [Vision 安全化の説明](<docs/vision-safety.md>)を参照してください。
 
+## ChatGPT Subscription の Fast モード
+
+この fork は `pro_fast_mode`／`flash_fast_mode` を永続設定に追加します。既定値は両方とも `false` で、推論努力とは独立しています。ネイティブ `openai-codex` の Hub 実行と、同梱の可逆 Host パッチが必要です。非対応・旧 Host では指定を拒否し、通常モードへ黙って変更しません。設定画面で送信対応を確認でき、ジョブ表示は Fast の要求とサーバーが返した実際の tier を区別します。[設定・Host パッチ・オフライン検証の説明](<docs/fast-mode.md>)を参照してください。サブスクリプションの使用量は増加します。実アカウントでの Fast 適用は未検証です。
+
 ## DSH Crew を使う理由
 
 DSH Crew は、オープンソースのエージェントハーネスである [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) のプラグインです。Claude Code、Codex、Antigravity、Grok から DSH エージェントをディスパッチできるようにします。orchestrator は自身のモデルを維持したまま、作業は DSH 本来のツール・サンドボックス・プリセット・セッション履歴を持つ本物の DSH エージェント上で実行され、ホスト側ではライブ進捗付きのネイティブ subagent として表示され続けます。
 
-作業を実行するのは DSH エージェントであり、単なるモデル呼び出しではありません。tier (`flash` / `pro`) によって、そのエージェントがハーネスに設定されたモデルロースターからどれだけの能力を得るかが決まります — 現在は DeepSeek V4 Flash と V4 Pro — そのため DSH 側でモデルを変更しても、ここでの変更は不要です。
+作業を実行するのは DSH エージェントであり、単なるモデル呼び出しではありません。tier (`flash` / `pro`) は Crew の provider/model 設定を選択します。既定値は DeepSeek V4 Flash と V4 Pro です。別の DSH ネイティブルートを使う場合は、tier ごとの `*_provider` / `*_model` を明示してください。DSH のメインエージェントのモデルを変更しても、Crew の tier 設定は変わりません。
 
 <table>
 <tr>

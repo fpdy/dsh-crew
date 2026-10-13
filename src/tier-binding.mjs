@@ -13,6 +13,8 @@
 // provider settings, this plugin's custom-provider list for the vision route,
 // and a third one for workers).
 
+import { resolveFastMode } from './fast-mode.mjs';
+
 /** The built-in DeepSeek route for each tier — the behaviour before #10. */
 export const DEFAULT_TIER_BINDING = Object.freeze({
   flash: Object.freeze({ provider: 'deepseek-official', model: 'deepseek-v4-flash' }),
@@ -57,7 +59,7 @@ export function isCustomBinding(tier, config = {}) {
 export function describeBindings(config = {}) {
   const out = {};
   for (const tier of TIERS) {
-    out[tier] = { ...resolveTierBinding(tier, config), custom: isCustomBinding(tier, config) };
+    out[tier] = { ...resolveTierBinding(tier, config), fast_mode: resolveFastMode(tier, config), custom: isCustomBinding(tier, config) };
   }
   return out;
 }

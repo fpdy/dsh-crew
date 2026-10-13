@@ -35,6 +35,7 @@ import { resolveProfile } from './worker-profiles.mjs';
 import { registerJob, publishStatus } from './jobs.mjs';
 import { acquireCwdLock } from './cwd-lock.mjs';
 import { ORIGIN_CHAIN_ENV, ORIGIN_DEPTH_ENV } from './origin-guard.mjs';
+import { requireFastHub, validateFastMode } from './fast-mode.mjs';
 
 export const STALL_SECONDS = 120;
 export const DEFAULT_TIMEOUT_MS = 1_800_000; // matches standalone spawn default
@@ -229,7 +230,8 @@ function settle(job, { status, error, stopReason }) {
   for (const w of job.waiters.splice(0)) w();
 }
 
-export async function startCliJob({ worker, task, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, source = 'api', effort, origin = null, allowConcurrentCwd = false }) {
+export async function startCliJob({ worker, task, cwd, timeoutMs = DEFAULT_TIMEOUT_MS, source = 'api', effort, origin = null, allowConcurrentCwd = false, fast_mode = false }) {
+  requireFastHub('cli', validateFastMode(fast_mode));
   const profile = typeof worker === 'string' ? resolveProfile(worker) : worker;
   const workspace = resolve(cwd ?? process.cwd());
   const args = buildArgs(profile, task, timeoutMs, effort);

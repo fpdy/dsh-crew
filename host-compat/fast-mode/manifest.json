@@ -1,0 +1,121 @@
+{
+  "format": 1,
+  "hostVersion": "0.2.1-alpha.2",
+  "files": [
+    {
+      "path": "docs/persistence-catalog.i18n.yaml",
+      "beforeSha256": "59a7c24c281ded1ec6706fe88552112979efd10e289defc4d3d7627679bd15aa",
+      "afterSha256": "7d01101ee8cc4bc89fb57092a0391b48cc50e713bad2dc7bab0b6c5fc50f2068"
+    },
+    {
+      "path": "docs/persistence-catalog.md",
+      "beforeSha256": "32bbaeb5dc5706427e4f2d8d9dea095f67d819bc1293a428af895cfe4efa4d43",
+      "afterSha256": "1561b4034e99925b90625022e27cee1f062ea256d5055e81bd59b18697bb17ed"
+    },
+    {
+      "path": "docs/persistence-catalog.zh.md",
+      "beforeSha256": "239e98a6550eb1fb52d3da23122b6dfd6a683f2d87c2daa9618c609a593c16e6",
+      "afterSha256": "790c234f3ba39c0f8da6be410d73ed835ba5672cee26431719d8130ba370502f"
+    },
+    {
+      "path": "docs/persistence-changes/2026-10-14-codex-priority-observation.i18n.yaml",
+      "beforeSha256": null,
+      "afterSha256": "df5198f0480b29b823169187264a60f9a8f696cbf506cce22cced4fb2704f018"
+    },
+    {
+      "path": "docs/persistence-changes/2026-10-14-codex-priority-observation.md",
+      "beforeSha256": null,
+      "afterSha256": "14bc85b4c4c5a921de6eca1fd690e124fa2eab94b1ccb793657a876c970af422"
+    },
+    {
+      "path": "docs/persistence-changes/2026-10-14-codex-priority-observation.schema.json",
+      "beforeSha256": null,
+      "afterSha256": "89a71ccdf4c69f678bf2f3dee18b6610ff2c9d0622e5e5f547783846c5c0e414"
+    },
+    {
+      "path": "docs/persistence-changes/2026-10-14-codex-priority-observation.zh.md",
+      "beforeSha256": null,
+      "afterSha256": "ddacc985ca49fbf5293686f773524d3f98b1e12054555f6d8110927490afa4e9"
+    },
+    {
+      "path": "docs/persistence-schema.json",
+      "beforeSha256": "f82522e0533735b2e410919afc99ad026ebcb70fdf0daef6fa3be97011541d0d",
+      "afterSha256": "4d123dc4e6244f60f2af298f5106518059b52d9f06dd211098598aec1e807609"
+    },
+    {
+      "path": "packages/core/agent-loop/src/agent.ts",
+      "beforeSha256": "4add12f5c22bb1b8cf1dbc239c9b09fa3351feff2c936cb2b8900036468bd01b",
+      "afterSha256": "a0cf929a5bd8834d53122c9b74efccef8136093060b8c5fccd7a295e95bd8dae"
+    },
+    {
+      "path": "packages/core/session/src/index.ts",
+      "beforeSha256": "434e079558c804497cabee0fb73329843bfa4ceb1dce3e3d1b33c73469bdb2f4",
+      "afterSha256": "028338df11390dc2a44db8e1cf2046d973e269652341fd39b4af3eaca52a1e33"
+    },
+    {
+      "path": "packages/llm/llm-pi-ai/README.i18n.yaml",
+      "beforeSha256": "ee3b139dc70b694edef2c0d35952f3047f0e8bc4464f648c3e37905661bb25ad",
+      "afterSha256": "b02041a9bcefdcfe384ace609698514784e03b120bfba877c12bd78b108915d8"
+    },
+    {
+      "path": "packages/llm/llm-pi-ai/README.md",
+      "beforeSha256": "dc842032218bd8a95c3c1bd83bc5653bfb45815549f09de3f8e769ba1bbb3d00",
+      "afterSha256": "cfd7d096e31be691cf8d4d64033796bb30d25d27188343a5e8382ed9747fc4a3"
+    },
+    {
+      "path": "packages/llm/llm-pi-ai/README.zh.md",
+      "beforeSha256": "c5dffd0b023993b829264ba08a875703436ce48bfaadf46722fa38143b5c9790",
+      "afterSha256": "9f3bec4bece940bf8505c74d60085680218f396f2aa92c8424070b8d1c156d7e"
+    },
+    {
+      "path": "packages/llm/llm-pi-ai/src/adapter.ts",
+      "beforeSha256": "cb686e5640df2eb311c94c15f06c18a17af31246aac669d69699964a2324408a",
+      "afterSha256": "c777fe5e4cbbb5327a0a2b227aff25682b3076bdef276c5560508718a4309b25"
+    },
+    {
+      "path": "packages/llm/llm-pi-ai/tests/service-tier.spec.ts",
+      "beforeSha256": null,
+      "afterSha256": "cd7af457d23915269bdd24a0062fd9eed0b49be2cc553ecef97f73f6cec6485f"
+    },
+    {
+      "path": "packages/llm/llm/README.i18n.yaml",
+      "beforeSha256": "60e2be0620c3a265c8e7a14c39f4469c4fc4a84cb358535e73f3073eef895037",
+      "afterSha256": "079968e03c30b9d65a97cb36dfb4f549e109240f683f32578e3a6379d7c0fcd9"
+    },
+    {
+      "path": "packages/llm/llm/README.md",
+      "beforeSha256": "0f18afcf93dfe0aabda082d43155594925e7729b2c3269b429ef930615fde3e3",
+      "afterSha256": "e86114fc2c3fdc49b786c5293c289bc38fa4704becf8dfe7b10fde976ae7939a"
+    },
+    {
+      "path": "packages/llm/llm/README.zh.md",
+      "beforeSha256": "54cac3eb588b40d01a479bce9d0b703f7d3e3117e27496312b00b713a61efbb7",
+      "afterSha256": "cfffca2a892fdfd84731874822d6fdb7c6303a742dfbe82c920377291b2b319c"
+    },
+    {
+      "path": "packages/llm/llm/src/assistant-stream.ts",
+      "beforeSha256": "9ff074108132ef0ffeefffd8e7967d05db4c6bef1689242807ef7a1d2105dfeb",
+      "afterSha256": "63262b5db60a4c8c4c89d4a170ee11fb653846c7f7e0d9bf68d903ab907e4fad"
+    },
+    {
+      "path": "packages/llm/llm/src/call-config.ts",
+      "beforeSha256": "1b70454e4c6d579ebe2a24f76c25f22f90d4e9c7fb0c90f73afd731371962bd0",
+      "afterSha256": "f288162287989ff67a1cd00d3e05b077341a9ce16612db6ae182682ac365d204"
+    },
+    {
+      "path": "packages/llm/llm/src/index.ts",
+      "beforeSha256": "33967a6fb6a27b1f17e89d8596eb9d66a5ce848964c7c2a0d2d93f31fe7c4c2d",
+      "afterSha256": "9e09945f4269212320ec9e40fcaa9285abf88cda6983b456290ac104164f263a"
+    },
+    {
+      "path": "packages/llm/llm/src/types.ts",
+      "beforeSha256": "f807e8c051af974e3a963e3c0abd156d5504ea057c80228a07397ccc3bae1791",
+      "afterSha256": "c610e3821863d92370e331262ccbea644068a9c37fffd04a766e2cbb3be73f92"
+    },
+    {
+      "path": "packages/llm/llm/tests/service-tier.spec.ts",
+      "beforeSha256": null,
+      "afterSha256": "8076597878622e41f2f8c0f9428092f434cb9b1bd5d426045f0f660d4b05fcec"
+    }
+  ]
+}

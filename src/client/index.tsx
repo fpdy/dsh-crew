@@ -6,6 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from 'react-dom';
 
 import { reconcileGhosts, displayJobs, groupJobs, workspaceKey, basenameOf, abbrevPath, workspaceLocks, lockBadgeOf, statusInfoOf, ghostPidOf, procBadgeOf, dueProcProbes } from './jobs-view';
+import { parseFastSupport, canEnableFast, fastObservation, type FastSupport } from './fast-mode-view';
+import { resolveTierBinding } from '../tier-binding.mjs';
 
 // Build-time snapshot of the worker-profile registry — the same descriptors
 // dsh_worker_config returns as worker_profiles (name / backend / label /
@@ -99,6 +101,11 @@ const COPY = {
     tierPolicyDesc: { auto: 'auto · orchestrator 自选', 'flash-only': '只用 flash', 'pro-only': '只用 pro' },
     escalateHint: 'flash 失败自动用 pro 重试一次',
     presetFlash: 'flash 模式', presetPro: 'pro 模式',
+    fastTitle: 'ChatGPT Subscription · Fast',
+    fastHint: '按档位保存；仅支持兼容 Host 的 openai-codex。Fast 与推理强度独立，并会增加订阅额度消耗。新 MCP 会话读取修改。',
+    fastUnavailable: '当前绑定或 Host 不支持 Fast，或支持状态尚未确认。请检查 Models、Host 补丁并重启；可随时关闭已保存的 Fast。',
+    fastAvailable: 'Host 可发送 priority 请求；账号与模型是否实际获得 Fast 取决于服务端。',
+    fastLabels: { requested: 'Fast 已请求 · 实际档位未知', confirmed: 'Fast 已请求 · 服务端确认', standard: 'Fast 已请求 · 服务端返回 Standard', other: 'Fast 已请求 · 服务端返回其他档位' },
     builtInPresetNames: { standard: '标准模式', ptc: 'PTC 模式', minimal: '极简模式', cordis: '创造模式' } as Record<string, string>,
     multimodal: '多模态',
     visionProvider: '视觉 provider', visionModel: '视觉模型', imagegenProvider: '生图 provider',
@@ -193,6 +200,11 @@ const COPY = {
     tierPolicyDesc: { auto: 'auto · orchestrator picks', 'flash-only': 'flash only', 'pro-only': 'pro only' },
     escalateHint: 'retry a failed flash run once on pro',
     presetFlash: 'flash preset', presetPro: 'pro preset',
+    fastTitle: 'ChatGPT Subscription · Fast',
+    fastHint: 'Saved per tier; requires openai-codex and a compatible Host. Independent of reasoning effort; consumes more subscription usage. New MCP sessions read changes.',
+    fastUnavailable: 'This binding or Host cannot send Fast, or support is unverified. Check Models, apply the Host patch and restart. Saved Fast can always be disabled.',
+    fastAvailable: 'Host can send priority requests; actual Fast availability depends on the account, model and server.',
+    fastLabels: { requested: 'Fast requested · actual tier unknown', confirmed: 'Fast requested · server confirmed', standard: 'Fast requested · server returned Standard', other: 'Fast requested · server returned another tier' },
     builtInPresetNames: { standard: 'Standard mode', ptc: 'PTC mode', minimal: 'Minimal mode', cordis: 'Creator mode' } as Record<string, string>,
     multimodal: 'Multimodal',
     visionProvider: 'Vision provider', visionModel: 'Vision model', imagegenProvider: 'Image-gen provider',
@@ -395,6 +407,7 @@ function WorkersPanel({ ctx }: { ctx: any }) {
   const [hoverTask, setHoverTask] = useState<{ id: string; text: string; right: number; top: number; bottom: number; flip: boolean } | null>(null);
   const [status, setStatus] = useState<any>(null);
   const [visionGuardActive, setVisionGuardActive] = useState(false);
+  const [fastSupport, setFastSupport] = useState<FastSupport | null>(null);
   const [config, setConfig] = useState<any>(null);
   const [dynModels, setDynModels] = useState<Record<string, Array<{ value: string; label?: string }>>>({});
   const [presetRoster, setPresetRoster] = useState<{ defaultId?: string; presets: Array<{ id: string; name?: string; trust?: string }> }>({ presets: [] });
@@ -528,8 +541,19 @@ function WorkersPanel({ ctx }: { ctx: any }) {
     } catch { setVisionGuardActive(false); }
   }, [readJson, withLang]);
 
+  const refreshFastSupport = useCallback(async () => {
+    try {
+      const path = '/fast-mode/status';
+      const value = await readJson(await fetch(withLang(path), {
+        cache: 'no-store', signal: AbortSignal.timeout(3000),
+      }), path);
+      setFastSupport(parseFastSupport(value));
+    } catch { setFastSupport(null); }
+  }, [readJson, withLang]);
+
   const refreshAll = useCallback(async () => {
     void refreshVisionGuard();
+    void refreshFastSupport();
     try {
       const [j, s, c, pr] = await Promise.all([get('/jobs'), get('/install/status'), get('/config'), get('/presets')]);
       if (j.ok) mergeJobs(j.jobs ?? []);
@@ -537,16 +561,17 @@ function WorkersPanel({ ctx }: { ctx: any }) {
       if (c.ok) setConfig((prev: any) => prev ?? c.config);
       if (pr.ok) setPresetRoster({ defaultId: pr.defaultId, presets: pr.presets ?? [] });
     } catch { /* instance restarting */ }
-  }, [get, mergeJobs, refreshVisionGuard]);
+  }, [get, mergeJobs, refreshVisionGuard, refreshFastSupport]);
 
   useEffect(() => {
     void refreshAll();
     const timer = setInterval(() => {
       void refreshVisionGuard();
+      void refreshFastSupport();
       void get('/jobs').then((j) => { if (j.ok) mergeJobs(j.jobs ?? []); }).catch(() => {});
     }, 3000);
     return () => clearInterval(timer);
-  }, [refreshAll, get, mergeJobs, refreshVisionGuard]);
+  }, [refreshAll, get, mergeJobs, refreshVisionGuard, refreshFastSupport]);
 
   const act = useCallback(async (target: string, confirmName?: string) => {
     if (confirmName && !window.confirm(copy.confirmRestore(confirmName))) return;
@@ -561,9 +586,16 @@ function WorkersPanel({ ctx }: { ctx: any }) {
 
   const applyPatch = useCallback((patch: Record<string, any>) => {
     void post('/config', patch).then((r) => {
-      if (r.ok) { setConfig(r.config); setNotice(copy.saved); setTimeout(() => setNotice(''), 1500); }
-    }).catch(() => {});
-  }, [post, copy]);
+      if (r.ok === false) throw new Error(r.error ?? 'Configuration update failed');
+      if (r.ok) {
+        setConfig(r.config); void refreshFastSupport();
+        setNotice(copy.saved); setTimeout(() => setNotice(''), 1500);
+      }
+    }).catch((error: any) => {
+      setFastSupport(null); setNotice(String(error?.message ?? error));
+      void get('/config').then((value) => { if (value.ok) setConfig(value.config); }).catch(() => {});
+    });
+  }, [post, get, copy, refreshFastSupport]);
   /** Selects & checkboxes: apply immediately. */
   const field = (key: string, value: any) => {
     setConfig((c: any) => ({ ...c, [key]: value }));
@@ -734,11 +766,15 @@ function WorkersPanel({ ctx }: { ctx: any }) {
     const ghostRow = !!ghosts[job.id] && !jobs.some((l) => l?.id === job.id);
     const info = statusInfoOf(job, copy);
     const pb = procBadgeOf(job, procProbe[job.id]);
+    const fastState = fastObservation(job);
     return (
       <tr key={job.id} style={job.status === 'orphaned' ? { background: 'rgba(240,136,62,0.05)' } : undefined}>
         <td style={{ ...S.tight, ...S.mono }} title={job.origin ? `${job.id} · ${job.origin}` : job.id}>{String(job.id).replace(/-[a-z0-9]+$/, '')}</td>
         <td style={S.tight}><span style={S.chip(job.source === 'claude-code' || job.source === 'codex')}>{sourceLabel(job.source)}</span></td>
-        <td style={S.tight} title={job.profile ? `profile: ${job.profile} · backend: ${job.backend}` : undefined}>{job.tier}/{job.effort}</td>
+        <td style={S.tight} title={job.profile ? `profile: ${job.profile} · backend: ${job.backend}` : undefined}>{job.tier}/{job.effort}
+          {fastState !== 'none' && <div style={{ fontSize: 10, color: fastState === 'confirmed' ? '#3fb950' : '#d29922', whiteSpace: 'normal' }}
+            title={job.response_service_tier ?? copy.fastLabels.requested}>{copy.fastLabels[fastState]}</div>}
+        </td>
         <td style={{ ...S.tight, minWidth: 82 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}
             title={job.currentTool ? `${info.title} · ${job.currentTool}` : info.title}>
@@ -834,6 +870,24 @@ function WorkersPanel({ ctx }: { ctx: any }) {
             <CustomSelect value={config.preset_pro ?? 'default'} onChange={(v) => field('preset_pro', v)} options={presetOptions} /></label>
         </>))}
 
+        {block({ t: copy.fastTitle, d: copy.fastHint }, (<>
+          {(['pro', 'flash'] as const).map((tier) => {
+            const binding = resolveTierBinding(tier, config);
+            const enabled = config[`${tier}_fast_mode`] === true;
+            const supported = canEnableFast(fastSupport, config, tier);
+            return <div key={tier} style={S.field}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <input type="checkbox" checked={enabled} disabled={busy || (!enabled && !supported)}
+                  onChange={(event) => field(`${tier}_fast_mode`, event.target.checked)} />
+                <span>{tier} Fast mode</span>
+              </label>
+              <span style={{ fontSize: 11, overflowWrap: 'anywhere' }}>{binding.provider} / {binding.model}</span>
+              <span role="status" style={{ fontSize: 11, color: supported ? 'inherit' : '#d29922' }}>
+                {supported ? copy.fastAvailable : copy.fastUnavailable}
+              </span>
+            </div>;
+          })}
+        </>))}
 
         <div style={S.group}>{copy.groupRuntime}</div>
         {block(copy.cardRuntime, (<>

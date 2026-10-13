@@ -9,6 +9,7 @@ import { ORIGIN_CHAIN_ENV, ORIGIN_DEPTH_ENV } from './origin-guard.mjs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { requireFastHub, validateFastMode } from './fast-mode.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const CONFIG_DIR = join(homedir(), '.config', 'dsh-crew');
@@ -106,7 +107,8 @@ export function registerJob(job) {
   return job;
 }
 
-export async function startJob({ task, tier = 'flash', effort = 'max', cwd, maxTokens = 49_152, timeoutMs = 1_800_000, source = 'api', origin = null, allowConcurrentCwd = false, provider, model }) {
+export async function startJob({ task, tier = 'flash', effort = 'max', cwd, maxTokens = 49_152, timeoutMs = 1_800_000, source = 'api', origin = null, allowConcurrentCwd = false, provider, model, fast_mode = false }) {
+  requireFastHub('standalone', validateFastMode(fast_mode));
   const tierInfo = TIERS[tier];
   if (!tierInfo) throw new Error(`unknown tier "${tier}" (expected: ${Object.keys(TIERS).join(', ')})`);
   // The caller (the MCP server, which owns session-level config) may bind this

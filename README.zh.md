@@ -32,11 +32,15 @@
 </p>
 <p align="center"><sub>DSH Crew 设置页 —— 宿主集成、派发策略、执行方式与多模态桥</sub></p>
 
+## ChatGPT Subscription Fast 模式
+
+此 fork 增加持久化的 `pro_fast_mode` / `flash_fast_mode`（默认关闭），与推理强度独立。仅支持原生 `openai-codex` Hub 路由，并需要随包提供的可逆 Host 补丁；旧或不支持的 Host 会拒绝请求，不会静默退回 Standard。设置面板确认发送能力，任务区分请求的 Fast 与服务器实际返回的档位。参见[配置、Host 补丁与离线验证](<docs/fast-mode.md>)。Fast 会增加订阅用量；尚未使用真实账号验证实际 Fast。
+
 ## 为什么用 DSH Crew
 
 DSH Crew 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH，开源 agent harness）的插件，它让 DSH agent 可以从 Claude Code、Codex、Antigravity 与 Grok 里被派活：orchestrator 的模型不变，活由真正的 DSH agent 去干——用的是这套 harness 的工具、沙箱、预设与会话历史——而在宿主里它仍然是一个带实时进度的原生子代理。
 
-干活的是 DSH agent，不是一次裸的模型调用。档位（`flash` / `pro`）决定这个 agent 从 harness 已配置的模型阵容里拿到多强的能力（目前是 DeepSeek V4 Flash 与 V4 Pro）——DSH 那边换模型，这边不用改。
+干活的是 DSH agent，不是一次裸的模型调用。档位（`flash` / `pro`）选择 Crew 配置的 provider/model 绑定；默认是 DeepSeek V4 Flash 与 V4 Pro。使用其他 DSH 原生路由时，请显式设置该档位的 `*_provider` / `*_model`。更改 DSH 主 agent 的模型不会改变 Crew 档位的绑定。
 
 <table>
 <tr>

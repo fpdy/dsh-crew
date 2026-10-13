@@ -1,0 +1,5 @@
+# Unified-diff context prefixes are patch data; never trim their trailing spaces.
+/host-compat/fast-mode/host.patch text eol=lf whitespace=-blank-at-eol
+# The generated SDK bundle contains whitespace-only lines inside code-generation
+# template strings. Preserve upstream bytes instead of rewriting runtime strings.
+/lib/server.mjs whitespace=-blank-at-eol

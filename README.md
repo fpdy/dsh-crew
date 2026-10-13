@@ -32,11 +32,15 @@
 
 This fork disables the `deepseek-vision` alias and automatic pasted-image transcription on all hosts. Native image-capable DSH routes and explicit `describe_image` / `generate_image` tools remain available. Restart DSH after updating an already-loaded Crew plugin; rebuilding or refreshing the panel alone does not replace the Host code. See [Vision safety and offline validation](<docs/vision-safety.md>).
 
+## ChatGPT Subscription Fast mode
+
+This fork adds persistent `pro_fast_mode` / `flash_fast_mode` defaults (both off), independent of reasoning effort. Fast requires the native `openai-codex` Hub route and the bundled, reversible DSH Host prerequisite; unsupported or old Hosts refuse it instead of silently running standard. Settings show request support, and jobs distinguish requested priority from the raw server's actual tier. See [configuration, Host patch and offline validation](<docs/fast-mode.md>). Increased subscription usage applies; real-account Fast availability has not been live-tested.
+
 ## Why DSH Crew
 
 DSH Crew is a plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH) — an open-source agent harness. It makes DSH agents dispatchable from Claude Code, Codex, Antigravity and Grok: the orchestrator keeps its own model, the work runs on a real DSH agent with that harness's tools, sandbox, presets and session history, and the host still shows it as a native subagent with live progress.
 
-What runs the work is a DSH agent, not a bare model call. Tiers (`flash` / `pro`) select how much capability that agent gets from the harness's configured roster — DeepSeek V4 Flash and V4 Pro today — so a change of model in DSH needs no change here.
+What runs the work is a DSH agent, not a bare model call. Tiers (`flash` / `pro`) select Crew's configured provider/model bindings; the shipped defaults are DeepSeek V4 Flash and V4 Pro. To use another native DSH route, set that tier's `*_provider` / `*_model` explicitly. Changing the main DSH agent's model does not change a Crew tier binding.
 
 <table>
 <tr>

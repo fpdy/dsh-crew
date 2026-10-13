@@ -42,6 +42,17 @@ async function call(path, init) {
 const MAX_POLL_SLICE_SECONDS = 60;
 
 export const hub = {
+  fastModeStatus: () => call('/fast-mode/status').then((body) => {
+    if (body.protocol !== 1) throw new Error('Fast mode requires a compatible hub (protocol 1)');
+    return body;
+  }),
+  checkFastMode: async (binding) => {
+    let body;
+    try {
+      body = await call('/fast-mode/check', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(binding), signal: AbortSignal.timeout(5000) });
+    } catch { throw new Error('Fast mode requires a reachable, compatible DSH hub; capability metadata is unverified'); }
+    if (body.protocol !== 1 || body.supported !== true) throw new Error(`Fast mode unavailable: ${body.reason ?? 'host_capability_unverified'}`);
+  },
   probe: (binding) => call('/worker-probe', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(binding) }).then(b => b.result),
   spawn: (spec) => call('/jobs', {
     method: 'POST',
